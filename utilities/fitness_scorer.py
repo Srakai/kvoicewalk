@@ -1,50 +1,74 @@
 # from scipy.spatial.distance import cosine
+from pathlib import Path
 from typing import Any
 
 import librosa
 import numpy as np
 import scipy.stats
 import soundfile as sf
+import torchaudio
 from numpy._typing import NDArray
 from resemblyzer import preprocess_wav, VoiceEncoder
+from speechbrain.inference.speaker import EncoderClassifier, SpeakerRecognition
 
 
 class FitnessScorer:
-    def __init__(self,target_path: str):
-        self.encoder = VoiceEncoder()
-        self.target_audio, _ = sf.read(target_path,dtype="float32")
-        self.target_wav = preprocess_wav(target_path,source_sr=24000)
+    def __init__(self, target_path: str, similarity_checker: str = "resemblyzer"):
+        self.similarity_checker = similarity_checker
+        if self.similarity_checker != "speechbrain":
+            self.encoder = VoiceEncoder()
+            self.target_audio, _ = sf.read(target_path, dtype="float32")
+            self.target_wav = preprocess_wav(target_path, source_sr=24000)
+
+        elif self.similarity_checker == "speechbrain":
+            self.verification = SpeakerRecognition.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb",
+                                                                savedir="pretrained_models/spkrec-ecapa-voxceleb")
+            self.classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
+            signal, fs = torchaudio.load(self.target_audio)
+            # TODO: Add speechbrain native versions of these functions
+            # self.target_embed = self.classifier.encode_batch(signal)
+            # self.target_features = self.extract_features(self.target_audio)
         self.target_embed = self.encoder.embed_utterance(self.target_wav)
         self.target_features = self.extract_features(self.target_audio)
 
     def hybrid_similarity(self, audio: NDArray[np.float32], audio2: NDArray[np.float32],target_similarity: float):
-        features = self.extract_features(audio)
-        self_similarity = self.self_similarity(audio,audio2)
-        target_features_pentalty = self.target_feature_penalty(features)
+        if self.similarity_checker != "speechbrain":
+            features = self.extract_features(audio)
+            self_similarity = self.self_similarity(audio, audio2)
+            target_features_penalty = self.target_feature_penalty(features)
 
-        #Normalize and make higher = better
-        feature_similarity = (100.0 - target_features_pentalty) / 100.0
-        if feature_similarity < 0.0:
-            feature_similarity = 0.01
+            # Normalize and make higher = better
+            feature_similarity = (100.0 - target_features_penalty) / 100.0
+            if feature_similarity < 0.0:
+                feature_similarity = 0.01
 
-        values = [target_similarity, self_similarity, feature_similarity]
-        # Playing around with the weights can greatly affect scoring and random walk behavior
-        weights = [0.48,0.5,0.02]
-        score = (np.sum(weights) / np.sum(np.array(weights) / np.array(values))) * 100.0
+            values = [target_similarity, self_similarity, feature_similarity]
+            # Playing around with the weights can greatly affect scoring and random walk behavior
+            weights = [0.48, 0.5, 0.02]
+            score = (np.sum(weights) / np.sum(np.array(weights) / np.array(values))) * 100.0
 
-        return {
-            "score": score,
-            "target_similarity": target_similarity,
-            "self_similarity": self_similarity,
-            "feature_similarity": feature_similarity
-        }
+            return {
+                "score": score,
+                "target_similarity": target_similarity,
+                "self_similarity": self_similarity,
+                "feature_similarity": feature_similarity
+            }
+        # TODO: Replicate functionality in native speechbrain
+        # elif self.similarity_checker == "speechbrain":
 
+    
     def target_similarity(self,audio: NDArray[np.float32]) -> float:
-        audio_wav = preprocess_wav(audio,source_sr=24000)
-        audio_embed = self.encoder.embed_utterance(audio_wav)
-        similarity = np.inner(audio_embed, self.target_embed)
-        return similarity
-
+        if self.similarity_checker != "speechbrain":
+            audio_wav = preprocess_wav(audio, source_sr=24000)
+            audio_embed = self.encoder.embed_utterance(audio_wav)
+            target_similarity_score = np.inner(audio_embed, self.target_embed)
+            return target_similarity_score
+        elif self.similarity_checker == "speechbrain":
+            target_similarity_score_tensor, prediction = self.verification.verify_files(str(self.target_wav),
+                                                                                        str(audio))
+            target_similarity_score = round(float(target_similarity_score_tensor[[0]]), 4)
+            return target_similarity_score
+        
     def target_feature_penalty(self,features: dict[str, Any]) -> float:
         """Penalizes for differences in audio features"""
         # Normalized feature difference compared to target features
@@ -54,14 +78,22 @@ class FitnessScorer:
             penalty += diff
         return penalty
 
-    def self_similarity(self,audio1: NDArray[np.float32], audio2: NDArray[np.float32]) -> float:
+    def self_similarity(self, audio1: NDArray[np.float32] | str | Path,
+                        audio2: NDArray[np.float32] | str | Path) -> float:
         """Self similarity indicates model stability. Poor self similarity means different input makes different sounding voices"""
-        audio_wav1 = preprocess_wav(audio1,source_sr=24000)
-        audio_embed1 = self.encoder.embed_utterance(audio_wav1)
+        audio_wav1 = preprocess_wav(audio1, source_sr=24000)
+        audio_wav2 = preprocess_wav(audio2, source_sr=24000)
+        if self.similarity_checker != "speechbrain":
+            audio_embed1 = self.encoder.embed_utterance(audio_wav1)
+            audio_embed2 = self.encoder.embed_utterance(audio_wav2)
 
-        audio_wav2 = preprocess_wav(audio2,source_sr=24000)
-        audio_embed2 = self.encoder.embed_utterance(audio_wav2)
-        return np.inner(audio_embed1, audio_embed2)
+            self_similarity_score = np.inner(audio_embed1, audio_embed2)
+            return self_similarity_score
+
+        elif self.similarity_checker == "speechbrain":
+            self_sim_score_tensor, prediction = self.verification.verify_files(str(audio1), str(audio2))
+            self_similarity_score = round(float(self_sim_score_tensor[[0]]), 4)
+            return self_similarity_score
 
     def extract_features(self, audio: NDArray[np.float32] | NDArray[np.float64], sr: int = 24000) -> dict[str, Any]:
         """
