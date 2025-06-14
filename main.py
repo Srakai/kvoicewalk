@@ -1,5 +1,6 @@
 import argparse
 import os
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -183,7 +184,12 @@ def main():
                         args.population_limit,
                          args.starting_voice,
                          args.output_name)
-        ktb.random_walk(args.step_limit)
-
+        try:
+            ktb.random_walk(args.step_limit)
+        except Exception as e:
+            print("FULL TRACEBACK:")
+            traceback.print_exc()
+            print(f"\nERROR: {e}")
+            print(f"ERROR TYPE: {type(e)}")
 if __name__ == "__main__":
     main()
