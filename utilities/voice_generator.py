@@ -14,12 +14,8 @@ class VoiceGenerator:
         self.max = self.stacked.max(dim=0)[0]
 
         if starting_voice:
-            # TODO: Remove
-            print('starting_voice = true')
             self.starting_voice = load_voice_safely(starting_voice)
         else:
-            # TODO: Remove
-            print('starting_voice = false')
             self.starting_voice = self.mean
 
     def generate_voice(self, base_tensor: torch.Tensor | None, diversity: float = 1.0, device: str = "cpu",
@@ -35,68 +31,24 @@ class VoiceGenerator:
         Returns:
             torch.Tensor: The new voice tensor.
         """
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
         if base_tensor is None:
-            # TODO: Remove
-            print('base tensor = none')
-            try:
-                base_tensor = self.mean.to(device=device)
-            except:
-                base_tensor = self.mean.to(device="cpu")
+            base_tensor = self.mean.to(device)
         else:
-            # TODO: Remove
-            print('base tensor = not none')
-            try:
-                base_tensor = base_tensor.clone().to(device)
-            except:
-                base_tensor = base_tensor.clone().to("cpu")
-        # device = "cuda" if torch.cuda.is_available() else "cpu"
-        # print(f"device: {device}")
-        #
-        # if base_tensor is None:
-        #     # TODO: Remove
-        #     print('base tensor = none')
-        #     try:
-        #         base_tensor = self.mean.to(device)
-        #     except:
-        #         base_tensor = self.mean.to("cpu")
-        # else:
-        #     # TODO: Remove
-        #     print('base tensor = not none')
-        #     try:
-        #         base_tensor = base_tensor.clone().to(device)
-        #     except:
-        #         base_tensor = base_tensor.clone().to("cpu")
+            base_tensor = base_tensor.clone().to(device)
 
-        # Generate random noise with same shape
-        # noise = torch.randn_like(base_tensor, device=device)
-        # try:
-        #     noise = torch.randn_like(base_tensor, device='cuda')
-        #     # TODO: Remove
-        #     print("gpu enabled voice gen")
-        # except:
-        #     print("gpu enabled voice gen failed")
-        #     noise = torch.randn_like(base_tensor, device='cpu')
-        #     # TODO: Remove
-        #     print("cpu enabled voice gen")
-        noise = torch.randn_like(base_tensor, device='cuda:0')
-        torch.save(noise, 'gpu_noise_tensor.pt')
-        # print(f"noise {noise.shape}; {noise.dtype}")
-        # noise = torch.randn_like(base_tensor, device='cpu')
-        # torch.save(noise, 'cpu_noise_tensor.pt')
-        print(f"noise {noise.shape}; {noise.dtype}")
-        # TODO: Remove
-        print("cpu enabled voice gen")
-
-        # Scale noise by standard deviation and the noise_scale factor
-        scaled_noise = noise * self.std.to(device) * diversity
-
-        # Add scaled noise to base tensor
+        noise = torch.randn_like(base_tensor, device=device)
+        std_tensor = self.std.to(device)
+        scaled_noise = noise * std_tensor * diversity
         new_tensor = base_tensor + scaled_noise
 
         if clip:
-            new_tensor = torch.clamp(new_tensor, self.min, self.max)
+            min_tensor = self.min.to(device)
+            max_tensor = self.max.to(device)
+            new_tensor = torch.clamp(new_tensor, min_tensor, max_tensor)
 
-        return new_tensor
+        # Ensure it's a FloatTensor for Kokoro
+        return new_tensor.float()
 
     # TODO: Make more voice generation functions

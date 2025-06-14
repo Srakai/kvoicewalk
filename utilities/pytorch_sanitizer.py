@@ -127,7 +127,7 @@ class VoiceLoader:
 
     def load_voice_safely(self, file_path: str) -> Optional[torch.Tensor]:
         """Complete safe loading pipeline for voice files"""
-        print(f"Loading voice file: {file_path}")
+        # print(f"Loading voice file: {file_path}")
 
         try:
             # Step 1: Safe load the file
