@@ -4,16 +4,14 @@ from typing import Any
 import numpy as np
 import torch
 
-from utilities.fitness_scorer import FitnessScorer
-from utilities.kvw_informer import log_gpu_memory
 from utilities.path_router import INTERPOLATED_DIR
 from utilities.pytorch_sanitizer import load_voice_safely
 
 
 class InitialSelector:
-    def __init__(self, speech_generator: Any, target_path: str, target_text: str, other_text: str,
+    def __init__(self, fitness_scorer: Any, speech_generator: Any, target_path: str, target_text: str, other_text: str,
                  voice_folder: str = "./voices", ) -> None:
-        self.fitness_scorer = FitnessScorer(target_path)
+        self.fitness_scorer = fitness_scorer
         self.speech_generator = speech_generator
         voices = []
         for filename in os.listdir(voice_folder):
@@ -32,13 +30,14 @@ class InitialSelector:
     def top_performer_start(self,population_limit: int) -> list[torch.Tensor]:
         """Simple top performer search to find best voices to use in random walk"""
         results = {}
-        log_gpu_memory("Before top_performer_start call", view=True)
+        # log_gpu_memory("Before top_performer_start call", view=True)
         for voice in self.voices:
             audio = self.speech_generator.generate_audio(self.target_text, voice["voice"])
             audio2 = self.speech_generator.generate_audio(self.other_text, voice["voice"])
             target_similarity = self.fitness_scorer.target_similarity(audio)
             results, _, _, _ = self.fitness_scorer.hybrid_similarity(audio, audio2, target_similarity, results)
-            print(f'{voice["name"]:<30} Target Sim:{results["target_similarity"]:.3f} Self Sim:{results["self_similarity"]:.3f} Feature Sim:{results["feature_similarity"]:.2f} Score:{results["score"]:.2f}')
+            # TODO: Enable log toggling
+            # print(f'{voice["name"]:<30} Target Sim:{results["target_similarity"]:.3f} Self Sim:{results["self_similarity"]:.3f} Feature Sim:{results["feature_similarity"]:.2f} Score:{results["score"]:.2f}')
             voice["results"] = results
 
         voices = sorted(self.voices, key=lambda x: x["results"]["score"],reverse=True)
@@ -48,7 +47,7 @@ class InitialSelector:
             print(f'{voice["name"]:<30} Target Sim:{voice["results"]["target_similarity"]:.3f} Self Sim:{voice["results"]["self_similarity"]:.3f} Feature Sim:{voice["results"]["feature_similarity"]:.2f} Score:{voice["results"]["score"]:.2f}')
 
         tensors = [voice["voice"]for voice in voices]
-        log_gpu_memory("After top_performer_start call", view=True)
+        # log_gpu_memory("After top_performer_start call", view=True)
         return tensors
 
     def interpolate_search(self,population_limit: int) -> list[torch.Tensor]:

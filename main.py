@@ -5,15 +5,18 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+import torch
 
 from utilities.audio_processor import Transcriber, convert_to_wav_mono_24k
 from utilities.kvoicewalk import KVoiceWalk
-from utilities.kvw_informer import log_gpu_memory
 from utilities.pytorch_sanitizer import load_multiple_voices
 from utilities.speech_generator import SpeechGenerator
 
 
 def main():
+    # Limit max gpu memory reservation
+    torch.cuda.set_per_process_memory_fraction(0.5)
+
     parser = argparse.ArgumentParser(description="A random walk Kokoro voice cloner.")
 
     # Common required arguments
@@ -80,7 +83,7 @@ def main():
 
     # Handle target_audio input - convert to mono wav 24K automatically
     if args.target_audio:
-        log_gpu_memory("Preprocessing target audio file")
+        # log_gpu_memory("Preprocessing target audio file")
         try:
             target_audio_path = Path(args.target_audio)
             if target_audio_path.is_file():
@@ -92,7 +95,7 @@ def main():
 
     # Transcribe (Start Mode)
     if args.transcribe_start:
-        log_gpu_memory("Transcribing target audio file")
+        # log_gpu_memory("Transcribing target audio file")
         try:
             target_path = Path(args.target_audio)
 
@@ -179,7 +182,7 @@ def main():
         if not args.target_text:
             parser.error("--target_text is required for random walk mode")
 
-        log_gpu_memory("Initializing KVoicewalk")
+        # log_gpu_memory("Initializing KVoicewalk")
         ktb = KVoiceWalk(args.target_audio,
                         args.target_text,
                         args.other_text,

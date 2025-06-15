@@ -10,25 +10,9 @@ from numpy._typing import NDArray
 from speechbrain.inference.speaker import SpeakerRecognition
 from torchaudio.prototype.transforms import ChromaSpectrogram
 
-from utilities.kvw_informer import log_gpu_memory
-
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-
-# class FitnessScorer:
-#     def __init__(self, target_path: str):
-# # Load SpeechBrain and Resemblyzer for Audio Analysis
-# self.encoder = VoiceEncoder()
-# self.verification = SpeakerRecognition.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb",
-#                                                     savedir="pretrained_models/spkrec-ecapa-voxceleb")
-# self.classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
-# # Prepare target audio formats for similarity analysis during randomwalk
-# self.target_wav = target_path
-# self.target_array, _ = sf.read(target_path, dtype="float32")
-# self.target_resampled_array = preprocess_wav(target_path, source_sr=24000)
-# self.target_embed = self.encoder.embed_utterance(self.target_resampled_array)
-# self.target_features = self.extract_features(self.target_array)
 class FitnessScorer:
     def __init__(self, target_wav: str, device: str = 'cuda'):
         """
@@ -106,7 +90,7 @@ class FitnessScorer:
         """
         # Extract features using GPU-optimized method
         # Time feature extraction
-        log_gpu_memory("Evaluating Feature Sim")
+        # log_gpu_memory("Evaluating Feature Sim")
         feature_start = datetime.datetime.now()
         features = self.extract_features(audio_array)
         feature_time = datetime.datetime.now() - feature_start
@@ -125,13 +109,13 @@ class FitnessScorer:
             audio_tensor2 = audio2_array.to(device).float()
 
         # Calculate self similarity with tensors
-        log_gpu_memory("Evaluating Self Sim")
+        # log_gpu_memory("Evaluating Self Sim")
         self_sim_start = datetime.datetime.now()
         self_similarity = self.self_similarity(audio_tensor1, audio_tensor2)
         self_sim_time = datetime.datetime.now() - self_sim_start
 
         # Calculate target feature penalty
-        log_gpu_memory("Evaluating Target Feature Penalty")
+        # log_gpu_memory("Evaluating Target Feature Penalty")
         target_penalty_start = datetime.datetime.now()
         target_features_penalty = self.target_feature_penalty(features)
         target_penalty_time = datetime.datetime.now() - target_penalty_start
@@ -274,26 +258,6 @@ class FitnessScorer:
         average_penalty = penalty / feature_count
         return float(average_penalty * 100.0)
 
-        # def self_similarity(self, audio_array1: NDArray[np.float32] | str | Path,
-        #                     audio_array2: NDArray[np.float32] | str | Path) -> float:
-        #     """Self similarity indicates model stability. Poor self similarity means different input makes different sounding voices"""
-        #     audio_wav1 = './out/audio_wav1_self_similarity.wav'
-        #     audio_wav2 = './out/audio_wav2_self_similarity.wav'
-        #     wavfile.write(audio_wav1, 24000, (audio_array1 / np.max(np.abs(audio_array1)) * 0.9).astype(np.float32))
-        #     wavfile.write(audio_wav2, 24000, (audio_array2 / np.max(np.abs(audio_array2)) * 0.9).astype(np.float32))
-        #     # audio_embed1 = self.encoder.embed_utterance(audio_wav1)
-        #     # audio_embed2 = self.encoder.embed_utterance(audio_wav2)
-        #     # # Dot Product Similarity (orig method, faster but can be misled by more confident predictions)
-        #     #     self_similarity_score = np.inner(audio_embed1, audio_embed2)
-        #     # # Cosine Similarity (slower but better for voice cloning generally)
-        #     #     self_similarity_score = np.inner(audio_embed1, audio_embed2) /
-        #     #             np.linalg.norm(audio_embed) * np.linalg.norm(audio_embed2))
-        #     # SpeechBrain Cosine Similarity (faster and more accurate)
-        #
-        #     self_sim_score_tensor, prediction = self.verification.verify_files(audio_wav1, audio_wav2)
-        #     self_similarity_score = round(float(self_sim_score_tensor[[0]]), 4)
-        #     return self_similarity_score
-
     def self_similarity(self, audio_tensor1: torch.Tensor | NDArray[np.float32],
                         audio_tensor2: torch.Tensor | NDArray[np.float32]) -> float:
         """
@@ -375,231 +339,232 @@ class FitnessScorer:
 
         # For CPU-only operations, keep a numpy version
         audio_numpy = audio_tensor.cpu().numpy()
+        with torch.no_grad():
+            # Initialize features dictionary
+            features = {}
 
-        # Initialize features dictionary
-        features = {}
+            # STFT parameters
+            n_fft = 2048
+            hop_length = 512
 
-        # STFT parameters
-        n_fft = 2048
-        hop_length = 512
+            # ===== CPU-ONLY FEATURES (keeping original librosa implementations) =====
 
-        # ===== CPU-ONLY FEATURES (keeping original librosa implementations) =====
+            # Tonnetz - librosa
+            tonnetz = librosa.feature.tonnetz(y=audio_numpy, sr=sr)
+            features["tonnetz_mean"] = float(np.mean(tonnetz))
+            features["tonnetz_std"] = float(np.std(tonnetz))
 
-        # Tonnetz - librosa
-        tonnetz = librosa.feature.tonnetz(y=audio_numpy, sr=sr)
-        features["tonnetz_mean"] = float(np.mean(tonnetz))
-        features["tonnetz_std"] = float(np.std(tonnetz))
+            # Rhythm features - librosa
+            tempo, beat_frames = librosa.beat.beat_track(y=audio_numpy, sr=sr)
+            features["tempo"] = float(tempo)
 
-        # Rhythm features - librosa
-        tempo, beat_frames = librosa.beat.beat_track(y=audio_numpy, sr=sr)
-        features["tempo"] = float(tempo)
-
-        if len(beat_frames) > 0:
-            # Calculate beat_stats only if beats are detected
-            beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-            if len(beat_times) > 1:
-                beat_diffs = np.diff(beat_times)
-                features["beat_mean"] = float(np.mean(beat_diffs))
-                features["beat_std"] = float(np.std(beat_diffs))
+            if len(beat_frames) > 0:
+                # Calculate beat_stats only if beats are detected
+                beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+                if len(beat_times) > 1:
+                    beat_diffs = np.diff(beat_times)
+                    features["beat_mean"] = float(np.mean(beat_diffs))
+                    features["beat_std"] = float(np.std(beat_diffs))
+                else:
+                    features["beat_mean"] = 0.0
+                    features["beat_std"] = 0.0
             else:
                 features["beat_mean"] = 0.0
                 features["beat_std"] = 0.0
-        else:
-            features["beat_mean"] = 0.0
-            features["beat_std"] = 0.0
 
-        # Pitch and harmonics - librosa
-        pitches, magnitudes = librosa.core.piptrack(y=audio_numpy, sr=sr, n_fft=n_fft, hop_length=hop_length)
+            # Pitch and harmonics - librosa
+            pitches, magnitudes = librosa.core.piptrack(y=audio_numpy, sr=sr, n_fft=n_fft, hop_length=hop_length)
 
-        # For each frame, find the highest magnitude pitch
-        pitch_values = []
-        for i in range(magnitudes.shape[1]):
-            index = magnitudes[:, i].argmax()
-            pitch = pitches[index, i]
-            if pitch > 0:  # Exclude zero pitch
-                pitch_values.append(pitch)
+            # For each frame, find the highest magnitude pitch
+            pitch_values = []
+            for i in range(magnitudes.shape[1]):
+                index = magnitudes[:, i].argmax()
+                pitch = pitches[index, i]
+                if pitch > 0:  # Exclude zero pitch
+                    pitch_values.append(pitch)
 
-        if pitch_values:
-            features["pitch_mean"] = float(np.mean(pitch_values))
-            features["pitch_std"] = float(np.std(pitch_values))
-        else:
-            features["pitch_mean"] = 0.0
-            features["pitch_std"] = 0.0
-
-        # ===== GPU-ACCELERATED FEATURES =====
-
-        # Basic features - GPU
-        features["rms_energy"] = float(torch.sqrt(torch.mean(audio_tensor ** 2)).item())
-
-        # Zero crossing rate - GPU implementation
-        zero_crossings = torch.diff(torch.sign(audio_tensor), dim=0)
-        features["zero_crossing_rate"] = float(torch.mean(torch.abs(zero_crossings)).item() / 2.0)
-
-        # STFT for spectral features - GPU
-        stft = torch.stft(audio_tensor, n_fft=n_fft, hop_length=hop_length,
-                          win_length=n_fft, return_complex=True, center=True)
-        magnitude = torch.abs(stft)
-        power = magnitude ** 2
-
-        # Frequency bins
-        freqs = torch.fft.fftfreq(n_fft, 1 / sr)[:n_fft // 2 + 1].to(device)
-
-        # Spectral centroid - GPU
-        weighted_freqs = freqs.unsqueeze(1) * magnitude
-        spectral_centroids = torch.sum(weighted_freqs, dim=0) / (torch.sum(magnitude, dim=0) + 1e-8)
-        features["spectral_centroid_mean"] = float(torch.mean(spectral_centroids).item())
-        features["spectral_centroid_std"] = float(torch.std(spectral_centroids).item())
-
-        # Spectral bandwidth - GPU
-        freq_diff = (freqs.unsqueeze(1) - spectral_centroids.unsqueeze(0)) ** 2
-        spectral_bandwidth = torch.sqrt(torch.sum(freq_diff * magnitude, dim=0) / (torch.sum(magnitude, dim=0) + 1e-8))
-        features["spectral_bandwidth_mean"] = float(torch.mean(spectral_bandwidth).item())
-        features["spectral_bandwidth_std"] = float(torch.std(spectral_bandwidth).item())
-
-        # Spectral rolloff - GPU (85% of spectral energy)
-        cumsum_power = torch.cumsum(power, dim=0)
-        total_power = torch.sum(power, dim=0)
-        rolloff_thresh = 0.85 * total_power
-        rolloff_indices = torch.argmax((cumsum_power >= rolloff_thresh.unsqueeze(0)).float(), dim=0)
-        rolloff_freqs = freqs[rolloff_indices]
-        features["spectral_rolloff_mean"] = float(torch.mean(rolloff_freqs).item())
-        features["spectral_rolloff_std"] = float(torch.std(rolloff_freqs).item())
-
-        # Mel spectrogram - GPU
-        mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=sr, n_fft=n_fft, hop_length=hop_length, n_mels=128
-        ).to(device)
-        mel_spec = mel_transform(audio_tensor.unsqueeze(0)).squeeze(0)
-        features["mel_spec_mean"] = float(torch.mean(mel_spec).item())
-        features["mel_spec_std"] = float(torch.std(mel_spec).item())
-
-        # MFCCs - GPU
-        mfcc_transform = torchaudio.transforms.MFCC(
-            sample_rate=sr, n_mfcc=13, melkwargs={
-                'n_fft': n_fft, 'hop_length': hop_length, 'n_mels': 128
-            }
-        ).to(device)
-        mfccs = mfcc_transform(audio_tensor.unsqueeze(0)).squeeze(0)
-
-        # Store each MFCC coefficient mean and std
-        for i in range(mfccs.shape[0]):
-            features[f"mfcc{i + 1}_mean"] = float(torch.mean(mfccs[i]).item())
-            features[f"mfcc{i + 1}_std"] = float(torch.std(mfccs[i]).item())
-
-        # MFCC delta features (first derivative) - GPU
-        mfcc_delta = torch.diff(mfccs, dim=1, prepend=mfccs[:, :1])
-        for i in range(mfcc_delta.shape[0]):
-            features[f"mfcc{i + 1}_delta_mean"] = float(torch.mean(mfcc_delta[i]).item())
-            features[f"mfcc{i + 1}_delta_std"] = float(torch.std(mfcc_delta[i]).item())
-
-        # Spectral flatness - GPU
-        geometric_mean = torch.exp(torch.mean(torch.log(magnitude + 1e-8), dim=0))
-        arithmetic_mean = torch.mean(magnitude, dim=0)
-        flatness = geometric_mean / (arithmetic_mean + 1e-8)
-        features["spectral_flatness_mean"] = float(torch.mean(flatness).item())
-        features["spectral_flatness_std"] = float(torch.std(flatness).item())
-
-        # Spectral contrast - GPU implementation
-        # Create frequency bands
-        n_bands = 6
-        fmin = 200.0
-        bands = torch.logspace(torch.log10(torch.tensor(fmin)),
-                               torch.log10(torch.tensor(sr / 2)),
-                               n_bands + 1).to(device)
-
-        contrast_values = []
-        for i in range(n_bands):
-            # Find frequency bins in this band
-            band_mask = (freqs >= bands[i]) & (freqs < bands[i + 1])
-            if torch.sum(band_mask) == 0:
-                contrast_values.append(torch.tensor(0.0, device=device))
-                continue
-
-            # Get magnitude in this band
-            band_mag = magnitude[band_mask, :]
-
-            # Calculate contrast (peak vs valley)
-            if band_mag.numel() > 0:
-                # Peak: mean of top 20% values
-                top_k = max(1, int(0.2 * band_mag.shape[0]))
-                peaks, _ = torch.topk(band_mag, top_k, dim=0)
-                peak_val = torch.mean(peaks)
-
-                # Valley: mean of bottom 20% values
-                bottom_k = max(1, int(0.2 * band_mag.shape[0]))
-                valleys, _ = torch.topk(band_mag, bottom_k, dim=0, largest=False)
-                valley_val = torch.mean(valleys)
-
-                # Contrast ratio
-                contrast = peak_val / (valley_val + 1e-8)
-                contrast_values.append(contrast)
+            if pitch_values:
+                features["pitch_mean"] = float(np.mean(pitch_values))
+                features["pitch_std"] = float(np.std(pitch_values))
             else:
-                contrast_values.append(torch.tensor(0.0, device=device))
+                features["pitch_mean"] = 0.0
+                features["pitch_std"] = 0.0
 
-        contrast_gpu = torch.stack(contrast_values)
-        features["spectral_contrast_mean"] = float(torch.mean(contrast_gpu).item())
-        features["spectral_contrast_std"] = float(torch.std(contrast_gpu).item())
+            # ===== GPU-ACCELERATED FEATURES =====
 
-        # Energy features - GPU
-        frame_length = hop_length
-        frames = audio_tensor.unfold(0, frame_length, hop_length)
-        energy = torch.sum(torch.abs(frames), dim=1)
-        features["energy_mean"] = float(torch.mean(energy).item())
-        features["energy_std"] = float(torch.std(energy).item())
+            # Basic features - GPU
+            features["rms_energy"] = float(torch.sqrt(torch.mean(audio_tensor ** 2)).item())
 
-        # Harmonics-to-noise ratio - GPU
-        S_squared = magnitude ** 2
-        S_mean = torch.mean(S_squared, dim=1)
-        S_std = torch.std(S_squared, dim=1)
-        S_ratio = S_mean / (S_std + 1e-8)
-        features["harmonic_ratio"] = float(torch.mean(S_ratio).item())
+            # Zero crossing rate - GPU implementation
+            zero_crossings = torch.diff(torch.sign(audio_tensor), dim=0)
+            features["zero_crossing_rate"] = float(torch.mean(torch.abs(zero_crossings)).item() / 2.0)
 
-        # Statistical features from raw waveform - GPU
-        features["audio_mean"] = float(torch.mean(audio_tensor).item())
-        features["audio_std"] = float(torch.std(audio_tensor).item())
+            # STFT for spectral features - GPU
+            stft = torch.stft(audio_tensor, n_fft=n_fft, hop_length=hop_length,
+                              win_length=n_fft, return_complex=True, center=True)
+            magnitude = torch.abs(stft)
+            power = magnitude ** 2
 
-        # Chroma features - GPU using torchaudio.prototype
-        chroma_transform = ChromaSpectrogram(sample_rate=sr, n_fft=n_fft, hop_length=hop_length).to(device)
-        chroma = chroma_transform(audio_tensor.unsqueeze(0)).squeeze(0)
-        features["chroma_mean"] = float(torch.mean(chroma).item())
-        features["chroma_std"] = float(torch.std(chroma).item())
+            # Frequency bins
+            freqs = torch.fft.fftfreq(n_fft, 1 / sr)[:n_fft // 2 + 1].to(device)
 
-        # Store individual chroma features
-        for i in range(chroma.shape[0]):
-            features[f"chroma_{i + 1}_mean"] = float(torch.mean(chroma[i]).item())
-            features[f"chroma_{i + 1}_std"] = float(torch.std(chroma[i]).item())
+            # Spectral centroid - GPU
+            weighted_freqs = freqs.unsqueeze(1) * magnitude
+            spectral_centroids = torch.sum(weighted_freqs, dim=0) / (torch.sum(magnitude, dim=0) + 1e-8)
+            features["spectral_centroid_mean"] = float(torch.mean(spectral_centroids).item())
+            features["spectral_centroid_std"] = float(torch.std(spectral_centroids).item())
 
-        # Statistical features - GPU implementation
-        audio_mean = torch.mean(audio_tensor)
-        audio_std = torch.std(audio_tensor)
-        normalized = (audio_tensor - audio_mean) / (audio_std + 1e-8)
+            # Spectral bandwidth - GPU
+            freq_diff = (freqs.unsqueeze(1) - spectral_centroids.unsqueeze(0)) ** 2
+            spectral_bandwidth = torch.sqrt(
+                torch.sum(freq_diff * magnitude, dim=0) / (torch.sum(magnitude, dim=0) + 1e-8))
+            features["spectral_bandwidth_mean"] = float(torch.mean(spectral_bandwidth).item())
+            features["spectral_bandwidth_std"] = float(torch.std(spectral_bandwidth).item())
 
-        # Skewness (third moment)
-        skewness = torch.mean(normalized ** 3)
-        features["audio_skew"] = float(skewness.item())
+            # Spectral rolloff - GPU (85% of spectral energy)
+            cumsum_power = torch.cumsum(power, dim=0)
+            total_power = torch.sum(power, dim=0)
+            rolloff_thresh = 0.85 * total_power
+            rolloff_indices = torch.argmax((cumsum_power >= rolloff_thresh.unsqueeze(0)).float(), dim=0)
+            rolloff_freqs = freqs[rolloff_indices]
+            features["spectral_rolloff_mean"] = float(torch.mean(rolloff_freqs).item())
+            features["spectral_rolloff_std"] = float(torch.std(rolloff_freqs).item())
 
-        # Kurtosis (fourth moment minus 3)
-        kurtosis = torch.mean(normalized ** 4) - 3.0
-        features["audio_kurtosis"] = float(kurtosis.item())
+            # Mel spectrogram - GPU
+            mel_transform = torchaudio.transforms.MelSpectrogram(
+                sample_rate=sr, n_fft=n_fft, hop_length=hop_length, n_mels=128
+            ).to(device)
+            mel_spec = mel_transform(audio_tensor.unsqueeze(0)).squeeze(0)
+            features["mel_spec_mean"] = float(torch.mean(mel_spec).item())
+            features["mel_spec_std"] = float(torch.std(mel_spec).item())
 
-        # Clean up GPU memory
-        cleanup_tensors = [
-            audio_tensor, zero_crossings, stft, magnitude, power, freqs,
-            weighted_freqs, spectral_centroids, freq_diff, spectral_bandwidth,
-            cumsum_power, total_power, rolloff_indices, rolloff_freqs,
-            mel_transform, mel_spec, mfcc_transform, mfccs, mfcc_delta,
-            geometric_mean, arithmetic_mean, flatness, bands, band_mask,
-            band_mag, contrast_gpu, peak_val, valley_val, contrast,
-            contrast_values, contrast_gpu, frames, energy, S_squared,
-            S_mean, S_std, S_ratio, chroma_transform, chroma, audio_mean,
-            audio_std, normalized, skewness, kurtosis
-        ]
+            # MFCCs - GPU
+            mfcc_transform = torchaudio.transforms.MFCC(
+                sample_rate=sr, n_mfcc=13, melkwargs={
+                    'n_fft': n_fft, 'hop_length': hop_length, 'n_mels': 128
+                }
+            ).to(device)
+            mfccs = mfcc_transform(audio_tensor.unsqueeze(0)).squeeze(0)
 
-        for tensor_name in cleanup_tensors:
-            try:
-                del tensor_name
-            except Exception as e:
-                # Log which tensor is problematic but continue cleanup
-                print(f"Warning: Could not delete {tensor_name}: {e}")
-                continue
-        return features
+            # Store each MFCC coefficient mean and std
+            for i in range(mfccs.shape[0]):
+                features[f"mfcc{i + 1}_mean"] = float(torch.mean(mfccs[i]).item())
+                features[f"mfcc{i + 1}_std"] = float(torch.std(mfccs[i]).item())
+
+            # MFCC delta features (first derivative) - GPU
+            mfcc_delta = torch.diff(mfccs, dim=1, prepend=mfccs[:, :1])
+            for i in range(mfcc_delta.shape[0]):
+                features[f"mfcc{i + 1}_delta_mean"] = float(torch.mean(mfcc_delta[i]).item())
+                features[f"mfcc{i + 1}_delta_std"] = float(torch.std(mfcc_delta[i]).item())
+
+            # Spectral flatness - GPU
+            geometric_mean = torch.exp(torch.mean(torch.log(magnitude + 1e-8), dim=0))
+            arithmetic_mean = torch.mean(magnitude, dim=0)
+            flatness = geometric_mean / (arithmetic_mean + 1e-8)
+            features["spectral_flatness_mean"] = float(torch.mean(flatness).item())
+            features["spectral_flatness_std"] = float(torch.std(flatness).item())
+
+            # Spectral contrast - GPU implementation
+            # Create frequency bands
+            n_bands = 6
+            fmin = 200.0
+            bands = torch.logspace(torch.log10(torch.tensor(fmin)),
+                                   torch.log10(torch.tensor(sr / 2)),
+                                   n_bands + 1).to(device)
+
+            contrast_values = []
+            for i in range(n_bands):
+                # Find frequency bins in this band
+                band_mask = (freqs >= bands[i]) & (freqs < bands[i + 1])
+                if torch.sum(band_mask) == 0:
+                    contrast_values.append(torch.tensor(0.0, device=device))
+                    continue
+
+                # Get magnitude in this band
+                band_mag = magnitude[band_mask, :]
+
+                # Calculate contrast (peak vs valley)
+                if band_mag.numel() > 0:
+                    # Peak: mean of top 20% values
+                    top_k = max(1, int(0.2 * band_mag.shape[0]))
+                    peaks, _ = torch.topk(band_mag, top_k, dim=0)
+                    peak_val = torch.mean(peaks)
+
+                    # Valley: mean of bottom 20% values
+                    bottom_k = max(1, int(0.2 * band_mag.shape[0]))
+                    valleys, _ = torch.topk(band_mag, bottom_k, dim=0, largest=False)
+                    valley_val = torch.mean(valleys)
+
+                    # Contrast ratio
+                    contrast = peak_val / (valley_val + 1e-8)
+                    contrast_values.append(contrast)
+                else:
+                    contrast_values.append(torch.tensor(0.0, device=device))
+
+            contrast_gpu = torch.stack(contrast_values)
+            features["spectral_contrast_mean"] = float(torch.mean(contrast_gpu).item())
+            features["spectral_contrast_std"] = float(torch.std(contrast_gpu).item())
+
+            # Energy features - GPU
+            frame_length = hop_length
+            frames = audio_tensor.unfold(0, frame_length, hop_length)
+            energy = torch.sum(torch.abs(frames), dim=1)
+            features["energy_mean"] = float(torch.mean(energy).item())
+            features["energy_std"] = float(torch.std(energy).item())
+
+            # Harmonics-to-noise ratio - GPU
+            S_squared = magnitude ** 2
+            S_mean = torch.mean(S_squared, dim=1)
+            S_std = torch.std(S_squared, dim=1)
+            S_ratio = S_mean / (S_std + 1e-8)
+            features["harmonic_ratio"] = float(torch.mean(S_ratio).item())
+
+            # Statistical features from raw waveform - GPU
+            features["audio_mean"] = float(torch.mean(audio_tensor).item())
+            features["audio_std"] = float(torch.std(audio_tensor).item())
+
+            # Chroma features - GPU using torchaudio.prototype
+            chroma_transform = ChromaSpectrogram(sample_rate=sr, n_fft=n_fft, hop_length=hop_length).to(device)
+            chroma = chroma_transform(audio_tensor.unsqueeze(0)).squeeze(0)
+            features["chroma_mean"] = float(torch.mean(chroma).item())
+            features["chroma_std"] = float(torch.std(chroma).item())
+
+            # Store individual chroma features
+            for i in range(chroma.shape[0]):
+                features[f"chroma_{i + 1}_mean"] = float(torch.mean(chroma[i]).item())
+                features[f"chroma_{i + 1}_std"] = float(torch.std(chroma[i]).item())
+
+            # Statistical features - GPU implementation
+            audio_mean = torch.mean(audio_tensor)
+            audio_std = torch.std(audio_tensor)
+            normalized = (audio_tensor - audio_mean) / (audio_std + 1e-8)
+
+            # Skewness (third moment)
+            skewness = torch.mean(normalized ** 3)
+            features["audio_skew"] = float(skewness.item())
+
+            # Kurtosis (fourth moment minus 3)
+            kurtosis = torch.mean(normalized ** 4) - 3.0
+            features["audio_kurtosis"] = float(kurtosis.item())
+
+            # Clean up GPU memory
+            # cleanup_tensors = [
+            #     audio_tensor, zero_crossings, stft, magnitude, power, freqs,
+            #     weighted_freqs, spectral_centroids, freq_diff, spectral_bandwidth,
+            #     cumsum_power, total_power, rolloff_indices, rolloff_freqs,
+            #     mel_transform, mel_spec, mfcc_transform, mfccs, mfcc_delta,
+            #     geometric_mean, arithmetic_mean, flatness, bands, band_mask,
+            #     band_mag, contrast_gpu, peak_val, valley_val, contrast,
+            #     contrast_values, contrast_gpu, frames, energy, S_squared,
+            #     S_mean, S_std, S_ratio, chroma_transform, chroma, audio_mean,
+            #     audio_std, normalized, skewness, kurtosis
+            # ]
+            #
+            # for tensor_name in cleanup_tensors:
+            #     try:
+            #         del tensor_name
+            #     except Exception as e:
+            #         # Log which tensor is problematic but continue cleanup
+            #         print(f"Warning: Could not delete {tensor_name}: {e}")
+            #         continue
+            return features
