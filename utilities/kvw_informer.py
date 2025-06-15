@@ -5,15 +5,18 @@ import torch
 
 
 # TODO Create class to initialize for results recording, savepoints creation, manage backups, debugging files
-def log_gpu_memory(step_name, view=False):
-    if view is True:
+def log_gpu_memory(step_name, view=False, console=False) -> str | None:
+    if view is True or console is True:
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1e9
             reserved = torch.cuda.memory_reserved() / 1e9
-            print(f"{step_name}: {allocated:.4f}GB allocated, {reserved:.4f}GB reserved")
+            info = f"{step_name}: {allocated:.4f}GB allocated, {reserved:.4f}GB reserved"
         else:
-            print(f"{step_name}: No CUDA available")
-
+            info = f"{step_name}: No CUDA available"
+        if view is True:
+            print(f"{info}")
+        elif console is True:
+            return info
 
 def gpu_memory_analysis(view=False):
     if view is True:
@@ -46,7 +49,7 @@ def track_gpu_objects():
                 if obj.is_cuda:
                     obj_type = type(obj).__name__
                     size = obj.element_size() * obj.numel()
-                    gpu_objects[f"{obj_type}_{obj.shape}"] += 1
+                    gpu_objects[f"\n{obj_type}_{obj.shape}"] += 1
                     total_size += size
         except (ReferenceError, RuntimeError, OSError, AttributeError):
             # Skip any problematic objects
