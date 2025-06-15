@@ -48,6 +48,15 @@ class VoiceGenerator:
             max_tensor = self.max.to(device)
             new_tensor = torch.clamp(new_tensor, min_tensor, max_tensor)
 
+        # Clean up GPU memory
+        cleanup_tensors = [base_tensor, noise, std_tensor, scaled_noise]
+        for tensor_name in cleanup_tensors:
+            try:
+                del tensor_name
+            except Exception as e:
+                # Log which tensor is problematic but continue cleanup
+                print(f"Warning: Could not delete {tensor_name}: {e}")
+                continue
         # Ensure it's a FloatTensor for Kokoro
         return new_tensor.float()
 

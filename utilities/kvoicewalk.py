@@ -1,16 +1,18 @@
 import datetime
 import os
 import random
-import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 import soundfile as sf
 import torch
+from torch import Tensor
 from tqdm import tqdm
 
 from utilities.fitness_scorer import FitnessScorer
 from utilities.initial_selector import InitialSelector
+from utilities.kvw_informer import log_gpu_memory
 from utilities.path_router import OUT_DIR
 from utilities.speech_generator import SpeechGenerator
 from utilities.voice_generator import VoiceGenerator
@@ -19,33 +21,31 @@ from utilities.voice_generator import VoiceGenerator
 class KVoiceWalk:
     def __init__(self, target_audio: Path, target_text: str, other_text: str, voice_folder: str,
                  interpolate_start: bool, population_limit: int, starting_voice: str, output_name: str) -> None:
+
         try:
             self.target_audio = target_audio
             self.target_text = target_text
             self.other_text = other_text
-
+            log_gpu_memory("Initializing Speech Generator")
+            self.speech_generator = SpeechGenerator()
             try:
-                self.initial_selector = InitialSelector(str(target_audio), target_text, other_text,
+                log_gpu_memory("Selecting voices")
+                self.initial_selector = InitialSelector(self.speech_generator, str(target_audio), target_text,
+                                                        other_text,
                                                     voice_folder=voice_folder)
-                print(f"self.initial_selector: passed")
             except Exception as e:
                 raise Exception(f"Error: {e}")
+            log_gpu_memory("Scoring target audio")
             self.fitness_scorer = FitnessScorer(str(target_audio))
-            print(f"fitness scorer passed")
-            voices: list[torch.Tensor] = []
+
+            log_gpu_memory("Selecting starting voices")
             if interpolate_start:
                 voices = self.initial_selector.interpolate_search(population_limit)
-                print(f"interpolate_start passed")
             else:
                 voices = self.initial_selector.top_performer_start(population_limit)
-                print(f"regular start passed")
-            self.speech_generator = SpeechGenerator()
-            print(f"speech gen passed")
-
+            log_gpu_memory("Initializing Voice Generator")
             self.voice_generator = VoiceGenerator(voices, starting_voice)
-            print(f"interpolate_start passed")
-            # Either the mean or the supplied voice tensor
-            self.starting_voice = self.voice_generator.starting_voice
+            self.clear_losers_from_memory()
             self.output_name = output_name
         except Exception as e:
             print("FULL TRACEBACK:")
@@ -56,7 +56,7 @@ class KVoiceWalk:
             raise SystemExit
 
     def random_walk(self,step_limit: int):
-
+        log_gpu_memory("Scoring initial voice")
         # Score Initial Voice
         best_voice = self.starting_voice
         best_results = self.score_voice(self.starting_voice)
@@ -69,18 +69,23 @@ class KVoiceWalk:
         os.makedirs(results_dir, exist_ok=True)
 
         # Random Walk Loop
-
+        log_gpu_memory("Starting random walk run")
         for i in tqdm(range(step_limit)):
             # TODO: Expose to CLI
             diversity = random.uniform(0.01,0.15)
+            log_gpu_memory("Generating best voice comparison")
             voice = self.voice_generator.generate_voice(best_voice,diversity)
 
             # Early function return saves audio generation compute
             min_similarity = best_results["target_similarity"] * 0.98
-            voice_results = self.score_voice(voice,min_similarity)
+            log_gpu_memory("Scoring Voice results")
+            voice_results = self.score_voice(voice, min_similarity)
 
             # Set new winner if score is better
+            # Check GPU memory periodically
             if voice_results["score"] > best_results["score"]:
+                self.clear_losers_from_memory()
+                log_gpu_memory("Printing/Saving Results KVoicewalk:", view=True)
                 best_results = voice_results
                 best_voice = voice
                 t.write(f'Step:{i:<4} Target Sim:{best_results["target_similarity"]:.3f} Self Sim:{best_results["self_similarity"]:.3f} Feature Sim:{best_results["feature_similarity"]:.3f} Score:{best_results["score"]:.2f} Diversity:{diversity:.2f}')
@@ -145,34 +150,74 @@ class KVoiceWalk:
     #
     #     return results
 
-    def score_voice(self, voice_tensor: torch.Tensor, min_similarity: float):
-        start_time = time.time()
+    def score_voice(self, voice_tensor: torch.Tensor, min_similarity: float = 0.0) -> dict[str, Any]:
+        start_time = datetime.datetime.now()
 
+        log_gpu_memory("Generating iterated voice audio")
         # Time audio generation
-        audio_start = time.time()
+        audio_start = datetime.datetime.now()
         audio = self.speech_generator.generate_audio(self.target_text, voice_tensor)
-        audio_time = time.time() - audio_start
-
-        # Time similarity calculation
-        sim_start = time.time()
+        audio = Tensor.cpu(audio).numpy()
+        audio_time = datetime.datetime.now() - audio_start
+        results: dict[str, Any] = {
+            'audio': audio
+        }
+        log_gpu_memory("Evaluating Target Sim")
+        # Time target similarity calculation
+        target_sim_start = datetime.datetime.now()
         target_sim = self.fitness_scorer.target_similarity(audio)
-        audio2 = self.speech_generator.generate_audio(self.target_text, voice_tensor)
-        self_sim = self.fitness_scorer.self_similarity(audio, audio2)
-        sim_time = time.time() - sim_start
+        target_sim_time = datetime.datetime.now() - target_sim_start
 
-        # Time feature extraction
-        feature_start = time.time()
-        features = self.fitness_scorer.extract_features(audio)
-        feature_time = time.time() - feature_start
+        log_gpu_memory("Checking target vs min sim")
+        if target_sim > min_similarity:
+            # Time self similarity calculation
+            log_gpu_memory("Generating Audio2")
+            audio2_start = datetime.datetime.now()
+            audio2 = self.speech_generator.generate_audio(self.target_text, voice_tensor)
+            # self_sim = self.fitness_scorer.self_similarity(audio, audio2)
+            audio2_time = datetime.datetime.now() - audio2_start
 
-        # Time scoring
-        score_start = time.time()
-        results = self.fitness_scorer.hybrid_similarity(audio, audio2, target_sim)
-        score_time = time.time() - score_start
+            # Time hybrid sim scoring
+            log_gpu_memory("Evaluating Hybrid Sim")
+            score_start = datetime.datetime.now()
+            # results.update(self.fitness_scorer.hybrid_similarity(audio, audio2, target_sim))
+            results, feature_sim_time, self_sim_time, target_penalty_time = self.fitness_scorer.hybrid_similarity(audio,
+                                                                                                                  audio2,
+                                                                                                                  target_sim,
+                                                                                                                  results)
+            score_time = datetime.datetime.now() - score_start
+            total_time = datetime.datetime.now() - start_time
+            del audio2
+            log_gpu_memory("Returning success results (target sim > min sim)")
+            # print(
+            #     f"Audio1 gen: {audio_time.total_seconds()}s, Audio1 gen: {audio2_time.total_seconds()}s, Target Similarity: {target_sim_time.total_seconds()}s,  Self Similarity: {self_sim_time.total_seconds()}s, Features: {feature_sim_time.total_seconds()}s, Penalty: {target_penalty_time.total_seconds()}s, Scoring: {score_time.total_seconds()}s, Total: {total_time.total_seconds()}s")
 
-        total_time = time.time() - start_time
-
-        print(
-            f"Audio gen: {audio_time:.3f}s, Similarity: {sim_time:.3f}s, Features: {feature_time:.3f}s, Scoring: {score_time:.3f}s, Total: {total_time:.3f}s")
+        else:
+            results["score"] = 0.0
+            results["target_similarity"] = target_sim
+            # Clean up GPU memory
+            del audio
+            log_gpu_memory("Returning fail results (target sim < min sim)")
 
         return results
+
+    def clear_losers_from_memory(self):
+        # Get reference to the voices cache
+        voices_cache = self.speech_generator.pipeline.voices
+
+        # Create list of voices to keep (winners)
+        voices_to_keep = {self.starting_voice}  # Always keep starting voice
+
+        # Add current best voice to exempt list
+        if hasattr(self, 'best_voice') and self.best_voice:
+            voices_to_keep.add(self.best_voice)
+
+        # Clean up all other voices
+        voices_to_delete = []
+        for voice_name in voices_cache:
+            if voice_name not in voices_to_keep:
+                voices_to_delete.append(voice_name)
+
+        # Delete the non-winners
+        for voice_name in voices_to_delete:
+            del voices_cache[voice_name]

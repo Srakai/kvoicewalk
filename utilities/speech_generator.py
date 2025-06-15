@@ -1,3 +1,4 @@
+import tempfile
 import warnings
 
 import torch
@@ -19,22 +20,31 @@ class SpeechGenerator:
 
     def generate_audio(self, text: str, voice: torch.Tensor, speed: float = 1.0) -> torch.Tensor:
         """Returns GPU tensor instead of numpy array"""
-        import tempfile
 
         # Ensure voice is on GPU
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        voice = voice.to(device)
+
 
         with tempfile.NamedTemporaryFile(suffix='.pt', delete=True) as temp_file:
+            voice = voice.to(device)
             torch.save(voice, temp_file.name)
 
             generator = self.pipeline(text, temp_file.name, speed)
+
+            # Clean up the cached voice using the temp filename
+            if temp_file.name in self.pipeline.voices:
+                del self.pipeline.voices[temp_file.name]
+
             audio_chunks = []
 
             for i, (gs, ps, chunk) in enumerate(generator):
                 if chunk is not None:
                     # Keep everything on GPU
                     audio_chunks.append(chunk.to(device))
+
+            # Clean up GPU memory
+            del generator  # This might hold references to GPU tensors
+            del voice  # Remove local copy
 
             # Concatenate and return GPU tensor
             if audio_chunks:
@@ -44,11 +54,11 @@ class SpeechGenerator:
 
 def surpressWarnings():
     # Surpress all these warnings showing up from libraries cluttering the console
-    warnings.filterwarnings(
-        "ignore",
-        message=".*RNN module weights are not part of single contiguous chunk of memory.*",
-        category=UserWarning,
-    )
+    # warnings.filterwarnings(
+    #     "ignore",
+    #     message=".*RNN module weights are not part of single contiguous chunk of memory.*",
+    #     category=UserWarning,
+    # )
     warnings.filterwarnings(
         "ignore", message=".*is deprecated in favor of*", category=FutureWarning
     )
