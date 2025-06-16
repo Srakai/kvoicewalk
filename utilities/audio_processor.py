@@ -72,17 +72,15 @@ class Transcriber:
             print("Detected language '%s' with probability %f" % (info.language, info.language_probability))
             print(f'Transcribing {audio_file.name}...')
 
-            transcription = ''
+            transcription = ""
             for segment in segments:
                 transcription += " " + segment.text.strip()
-                # print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text)) # Optional timestamps if parsing longer audio clips
 
             transcription_output = Path(TEXTS_DIR / str(f"{audio_file.stem}.txt"))
             with open(str(transcription_output), "w") as file:
                 file.write(f"{transcription[1:]}")
 
             end_time = datetime.datetime.now()
-            # print(f"Transcription completed in {(end_time - start_time).total_seconds()} seconds")
             print(f"Transcription available at ./texts/{audio_file.name[:-4]}.txt")
             print(f"{audio_file.name} Transcription:\n{transcription[1:]}")
             return transcription[1:]

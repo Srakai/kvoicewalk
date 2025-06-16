@@ -1,12 +1,15 @@
 import torch
 
+from utilities.kvw_informer import KVW_Informer
 from utilities.pytorch_sanitizer import load_voice_safely
 
 
 class VoiceGenerator:
-    def __init__(self, voices: list[torch.Tensor], starting_voice: str | None):
+    def __init__(self, kvw_informer: KVW_Informer, voices: list[torch.Tensor], starting_voice: str | None):
         self.voices = voices
-
+        self.kvw_informer = kvw_informer
+        self.log_view = self.kvw_informer.settings['voice_gen_logs']
+        self.process_times = self.kvw_informer.settings['tps_reports']
         self.stacked = torch.stack(voices,dim=0)
         self.mean = self.stacked.mean(dim=0)
         self.std = self.stacked.std(dim=0)
@@ -18,14 +21,14 @@ class VoiceGenerator:
         else:
             self.starting_voice = self.mean
 
-    def generate_voice(self, base_tensor: torch.Tensor | None, diversity: float = 1.0, device: str = "cpu",
+    def generate_voice(self, base_tensor: torch.Tensor | None, diversity: float = 1.0, device: str = "cuda",
                        clip: bool = False):
         """Generate a new voice tensor based on the base_tensor and diversity.
 
         Args:
             base_tensor (torch.Tensor | None): The base tensor to generate the new voice from.
             diversity (float, optional): The diversity of the new voice. Defaults to 1.0.
-            # device (str, optional): The device to generate the new voice on. Defaults to "cpu".
+            device (str, optional): The device to generate the new voice on. Defaults to "cuda".
             clip (bool, optional): Whether to clip the new voice to the min and max values. Defaults to False.
 
         Returns:
@@ -48,16 +51,6 @@ class VoiceGenerator:
             max_tensor = self.max.to(device)
             new_tensor = torch.clamp(new_tensor, min_tensor, max_tensor)
 
-        # Clean up GPU memory
-        cleanup_tensors = [base_tensor, noise, std_tensor, scaled_noise]
-        for tensor_name in cleanup_tensors:
-            try:
-                del tensor_name
-            except Exception as e:
-                # Log which tensor is problematic but continue cleanup
-                print(f"Warning: Could not delete {tensor_name}: {e}")
-                continue
-        # Ensure it's a FloatTensor for Kokoro
         return new_tensor.float()
 
     # TODO: Make more voice generation functions
