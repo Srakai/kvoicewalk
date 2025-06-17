@@ -33,15 +33,16 @@ class InitialSelector:
 
     def top_performer_start(self,population_limit: int) -> list[torch.Tensor]:
         """Simple top performer search to find best voices to use in random walk"""
-        best_results = {
-            "score": 0.0,
-            "target_similarity": 0.0,
-            "self_similarity": 0.0,
-            "feature_similarity": 0.0,
-        }
+
         results = {}
         if self.log_view is True: self.kvw_informer.log_gpu_memory("Before top_performer_start call", self.log_view)
         for voice in self.voices:
+            best_results = {
+                "score": 0.0,
+                "target_similarity": 0.0,
+                "self_similarity": 0.0,
+                "feature_similarity": 0.0,
+            }
             audio = self.speech_generator.generate_audio(self.target_text, voice["voice"])
             target_similarity, audio_float_tensor, audio_embed1 = self.fitness_scorer.target_similarity(audio)
             results, _, _, _ = self.fitness_scorer.hybrid_similarity(best_results, audio_float_tensor, audio_embed1,
@@ -63,14 +64,14 @@ class InitialSelector:
 
     def interpolate_search(self,population_limit: int) -> list[torch.Tensor]:
         """Finds an initial population of voices more optimal because of interpolated features"""
-        best_results = {
-            "score": 0.0,
-            "target_similarity": 0.0,
-            "self_similarity": 0.0,
-            "feature_similarity": 0.0,
-        }
         results = {}
         for voice in self.voices:
+            best_results = {
+                "score": 0.0,
+                "target_similarity": 0.0,
+                "self_similarity": 0.0,
+                "feature_similarity": 0.0,
+            }
             audio = self.speech_generator.generate_audio(self.target_text, voice["voice"])
             target_similarity, audio_float_tensor, audio_embed1 = self.fitness_scorer.target_similarity(audio)
             results, _, _, _ = self.fitness_scorer.hybrid_similarity(best_results, audio_float_tensor, audio_embed1,

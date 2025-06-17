@@ -169,7 +169,7 @@ class KVoiceWalk:
                 self.fitness_scorer.hybrid_similarity(best_results, audio_float_tensor, audio_embed1,
                                                       self.other_text, voice_tensor, target_sim, results))
             total_time = datetime.datetime.now() - start_time
-            if audio2_time is not 0.0 and self_sim_time is not 0.0:
+            if audio2_time != 0.0 and self_sim_time != 0.0:
                 if self.log_view is True: self.kvw_informer.log_gpu_memory(
                     "Returning success results (target sim > min sim)", self.log_view)
                 if self.process_times is True: tps_report = str(

@@ -128,7 +128,7 @@ class FitnessScorer:
         """
         audio_tensor1 = audio_array
         # Extract features using GPU-optimized method
-        # Time feature extraction
+        # Target feature extraction
         if self.log_view is True: self.kvw_informer.log_gpu_memory("Evaluating Feature Sim", self.log_view)
         feature_start = datetime.datetime.now()
         features = self.extract_features(audio_tensor1)
