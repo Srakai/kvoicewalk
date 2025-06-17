@@ -1,9 +1,5 @@
-import os
-
-os.environ['HF_HUB_OFFLINE'] = '1'  # Force offline mode
-os.environ['TRANSFORMERS_OFFLINE'] = '1'
-
 import argparse
+import os
 import traceback
 from pathlib import Path
 
@@ -19,13 +15,20 @@ from utilities.speech_generator import SpeechGenerator
 
 
 def main():
-    # Limit max gpu memory reservation, benchmarked at ~0.70GB throughout operation, no spikes
-    torch.cuda.set_per_process_memory_fraction(0.2)
-
     # import config settings
     kvw_informer = KVW_Informer()
     kvw_settings = kvw_informer.settings
     log_view = kvw_settings["preprocessing_logs"]
+    use_cached = kvw_settings["use_cached"]
+    cap_memory = kvw_settings["cap_memory"]
+    cap_memory_frac = kvw_settings["cap_memory_frac"]
+    # After initial download, recommend use cached copies of models == faster load times
+    if use_cached:
+        os.environ['HF_HUB_OFFLINE'] = '1'  # Force offline mode
+        os.environ['TRANSFORMERS_OFFLINE'] = '1'
+    # True: Limits excess memory overhead reservation, benchmarked at ~0.70GB throughout operation, no spikes
+    # Cap_memory_frac = 0.2, can be set 0-1, but recommend no lower than 0.15
+    if cap_memory: torch.cuda.set_per_process_memory_fraction(cap_memory_frac)
 
     parser = argparse.ArgumentParser(description="A random walk Kokoro voice cloner.")
 

@@ -7,5 +7,8 @@
   "scoring_results_logs": false,
   "tps_reports": true,
   "feature_times": false,
+  "use_cached": false,
+  "cap_memory": true,
+  "cap_memory_frac": 0.2,
   "memcache_clear_iteration_freq": 5000
 }
