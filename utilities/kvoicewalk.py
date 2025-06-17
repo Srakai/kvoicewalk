@@ -111,7 +111,7 @@ class KVoiceWalk:
             # Set new winner if score is better
             if voice_results["score"] > best_results["score"]:
                 best_results = voice_results
-                best_voice = voice
+                best_voice = voice.cpu()
                 try:
                     t.write(
                         f'Step:{i:<4} Target Sim:{best_results["target_similarity"]:.3f} Self Sim:{best_results["self_similarity"]:.3f} Feature Sim:{best_results["feature_similarity"]:.3f} Score:{best_results["score"]:.2f} Diversity:{diversity:.2f}')
