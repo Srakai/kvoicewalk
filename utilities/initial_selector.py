@@ -96,8 +96,9 @@ class InitialSelector:
                     audio = self.speech_generator.generate_audio(self.target_text, voice)
                     target_similarity, audio_float_tensor, audio_embed1 = self.fitness_scorer.target_similarity(audio)
                     results, _, _, _ = self.fitness_scorer.hybrid_similarity(best_results, audio_float_tensor,
-                                                                             audio_embed1, self.other_text,
-                                                                             voice["voice"], target_similarity, results)
+                                                                             audio_embed1,
+                                                                             self.other_text, voice, target_similarity,
+                                                                             results)
 
                     print(f'{i:<3} {j:<3} {iter:<4.2f} {voices[i]["name"] or "N/A":<10} {voices[j]["name"] or "N/A":<10} Target Sim:{results.get("target_similarity", 0):.3f}, Self Sim:{results.get("self_similarity", 0):.3f}, Feature Sim:{results.get("feature_similarity", 0):.2f}, Score:{results.get("score", 0):.2f}')
 
