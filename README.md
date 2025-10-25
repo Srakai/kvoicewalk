@@ -25,6 +25,15 @@ uv venv --python 3.10
 source .venv/bin/activate # '.venv\Scripts\activate' if Windows
 uv sync
 ```
+
+### Hardware Acceleration
+KVoiceWalk automatically detects and uses the best available hardware acceleration:
+- **Apple Silicon (M1/M2/M3)**: Uses MPS (Metal Performance Shaders) for GPU acceleration
+- **NVIDIA GPUs**: Uses CUDA for GPU acceleration  
+- **CPU**: Falls back to CPU if no GPU is available
+
+No configuration is needed - the application automatically selects the optimal device.
+
 ## Usage
 2. KVoiceWalk expects target audio files to be in Mono 24000 Hz sample rate wav file format; ideally 20-30 seconds of a single speaker. However if needed, Kvoicewalk will check and convert target audio files into the proper format. If you would prefer to prepare them beforehand, you can this use this example ffmpeg command. 
 
