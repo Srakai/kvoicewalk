@@ -71,7 +71,8 @@ class Transcriber:
         # model = WhisperModel(model_size, device="cuda", compute_type="int8_float16")
 
         # or run on CPU with INT8 !!(more than sufficient for 30s clip)!!
-        self.model = WhisperModel(model_size, device="mps", compute_type="float16")
+        # faster-whisper doesn't support MPS, use CPU instead
+        self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
     def transcribe(self, audio_path: Path):
         audio_file = audio_path
@@ -188,6 +189,10 @@ class Transcriber:
             CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
             chunk_info = []
 
+            print(f"\n{'='*80}")
+            print(f"Creating {len(chunks)} chunks from {audio_path.name}")
+            print(f"{'='*80}")
+
             # Extract and save each chunk
             for i, chunk in enumerate(chunks):
                 start_sample = int(chunk["start"] * sr)
@@ -213,16 +218,17 @@ class Transcriber:
                     (chunk_path, chunk_transcription, chunk["start"], chunk["end"])
                 )
 
+                print(f"\nChunk {i+1}/{len(chunks)}:")
                 print(
-                    f"  Chunk {i}: {chunk['duration']:.2f}s ({chunk['start']:.2f}s - {chunk['end']:.2f}s)"
+                    f"  Duration: {chunk['duration']:.2f}s ({chunk['start']:.2f}s - {chunk['end']:.2f}s)"
                 )
-                print(
-                    f"    Text: {chunk_transcription[:80]}..."
-                    if len(chunk_transcription) > 80
-                    else f"    Text: {chunk_transcription}"
-                )
+                print(f"  Words: {len(chunk_transcription.split())}")
+                print(f"  Text: {chunk_transcription}")
 
-            print(f"\nCreated {len(chunk_info)} chunks in {CHUNKS_DIR}")
+            print(f"\n{'='*80}")
+            print(f"Total chunks created: {len(chunk_info)}")
+            print(f"Chunks saved to: {CHUNKS_DIR}")
+            print(f"{'='*80}\n")
             return chunk_info
 
         except Exception as e:

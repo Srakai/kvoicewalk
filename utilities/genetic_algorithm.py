@@ -17,7 +17,7 @@ class GeneticAlgorithm:
         population_size: int = 20,
         elite_size: int = 4,
         mutation_rate: float = 0.1,
-        mutation_strength: float = 0.05,
+        mutation_strength: float = 0.12,
         crossover_rate: float = 0.7,
         tournament_size: int = 3,
         adaptive_mutation: bool = True,
@@ -83,7 +83,7 @@ class GeneticAlgorithm:
         # Ensure both on CPU
         parent1 = parent1.cpu()
         parent2 = parent2.cpu()
-        alpha = random.uniform(-0.5, 1.5)  # Allow extrapolation
+        alpha = random.uniform(-1.0, 2.0)  # More aggressive extrapolation
         child1 = alpha * parent1 + (1 - alpha) * parent2
         child2 = (1 - alpha) * parent1 + alpha * parent2
         return child1, child2

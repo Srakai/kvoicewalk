@@ -143,7 +143,7 @@ class HybridMetaLearner:
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
         # Load main checkpoint
-        checkpoint_data = torch.load(checkpoint_path)
+        checkpoint_data = torch.load(checkpoint_path, weights_only=False)
 
         self.generation = checkpoint_data["generation"]
         self.total_evaluations = checkpoint_data["total_evaluations"]
@@ -161,12 +161,12 @@ class HybridMetaLearner:
         # Load population
         population_path = checkpoint_path.with_suffix(".population.pt")
         if population_path.exists():
-            self.ga.population = torch.load(population_path)
+            self.ga.population = torch.load(population_path, weights_only=False)
 
         # Load best embedding
         best_path = checkpoint_path.with_suffix(".best.pt")
         if best_path.exists():
-            self.best_ever_embedding = torch.load(best_path)
+            self.best_ever_embedding = torch.load(best_path, weights_only=False)
 
         # Restore BO state
         if self.bo:
@@ -177,7 +177,7 @@ class HybridMetaLearner:
             # Load BO observed points
             bo_path = checkpoint_path.with_suffix(".bo_observed.pt")
             if bo_path.exists():
-                self.bo.X_observed = torch.load(bo_path)
+                self.bo.X_observed = torch.load(bo_path, weights_only=False)
 
         if verbose:
             print(f"Checkpoint loaded: {checkpoint_path}")
@@ -276,6 +276,9 @@ class HybridMetaLearner:
 
             # Refine each with BO
             refined_population = []
+            best_refined_emb = None
+            best_refined_fit = -float("inf")
+
             for idx, (embedding, fitness) in enumerate(top_k):
                 refined_emb, refined_fit, refined_details = self.bo.optimize_local(
                     starting_point=embedding,
@@ -291,10 +294,21 @@ class HybridMetaLearner:
                         f"{fitness:.4f} -> {refined_fit:.4f}"
                     )
 
+                # Track the best refined candidate
+                if refined_fit > best_refined_fit:
+                    best_refined_fit = refined_fit
+                    best_refined_emb = refined_emb.clone()
+
                 # Inject refined individual back into population (replace worst)
                 worst_idx = self.ga.fitness_scores.index(min(self.ga.fitness_scores))
                 self.ga.population[worst_idx] = refined_emb.cpu()
                 self.ga.fitness_scores[worst_idx] = refined_fit
+
+            # Guarantee the best BO-refined candidate is in the population
+            if best_refined_emb is not None:
+                worst_idx = self.ga.fitness_scores.index(min(self.ga.fitness_scores))
+                self.ga.population[worst_idx] = best_refined_emb.cpu()
+                self.ga.fitness_scores[worst_idx] = best_refined_fit
 
         # Diversity injection
         if (
