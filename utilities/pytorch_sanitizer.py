@@ -7,6 +7,7 @@ import torch
 
 class SkipFileException(Exception):
     """Exception to skip loading a file"""
+
     pass
 
 
@@ -31,12 +32,14 @@ class VoiceLoader:
 
         # Try with numpy globals
         try:
-            with torch.serialization.safe_globals([
-                np.core.multiarray._reconstruct,
-                np.ndarray,
-                np.dtype,
-                np.core.multiarray.scalar,
-            ]):
+            with torch.serialization.safe_globals(
+                [
+                    np.core.multiarray._reconstruct,
+                    np.ndarray,
+                    np.dtype,
+                    np.core.multiarray.scalar,
+                ]
+            ):
                 data = torch.load(file_path)
                 # print(f"✅  Safely Loaded {file_path} with numpy globals allowed")
                 return data
@@ -46,7 +49,9 @@ class VoiceLoader:
         # Handle unsafe loading with user choice
         return self._handle_unsafe_loading(file_path)
 
-    def _handle_unsafe_loading(self, file_path: str) -> Union[torch.Tensor, Dict[str, Any]]:
+    def _handle_unsafe_loading(
+        self, file_path: str
+    ) -> Union[torch.Tensor, Dict[str, Any]]:
         """Handle unsafe file loading with user interaction"""
 
         print(f"🚨 File {file_path} requires unsafe loading!")
@@ -62,31 +67,35 @@ class VoiceLoader:
 
         # Interactive choice
         while True:
-            choice = input(
-                f"\nOptions for {os.path.basename(file_path)}:\n"
-                f"[Y]es - Load unsafely\n"
-                f"[N]o - Skip this file\n"
-                f"[A]ll - Yes to all remaining files\n"
-                f"[D]eny - No to all remaining files\n"
-                f"[E]xit - Stop program\n"
-                f"Choice: "
-            ).upper().strip()
+            choice = (
+                input(
+                    f"\nOptions for {os.path.basename(file_path)}:\n"
+                    f"[Y]es - Load unsafely\n"
+                    f"[N]o - Skip this file\n"
+                    f"[A]ll - Yes to all remaining files\n"
+                    f"[D]eny - No to all remaining files\n"
+                    f"[E]xit - Stop program\n"
+                    f"Choice: "
+                )
+                .upper()
+                .strip()
+            )
 
-            if choice == 'E':
-                print('User stopping program...')
+            if choice == "E":
+                print("User stopping program...")
                 raise SystemExit
-            elif choice == 'D':
+            elif choice == "D":
                 self.auto_deny_unsafe = True
                 self.risky_files.append(file_path)
                 raise SkipFileException(f"User denied loading {file_path}")
-            elif choice == 'N':
+            elif choice == "N":
                 self.risky_files.append(file_path)
                 raise SkipFileException(f"User declined loading {file_path}")
-            elif choice == 'A':
+            elif choice == "A":
                 self.auto_allow_unsafe = True
                 self.risky_files.append(file_path)
                 return self._unsafe_load(file_path)
-            elif choice == 'Y':
+            elif choice == "Y":
                 self.risky_files.append(file_path)
                 return self._unsafe_load(file_path)
             else:
@@ -101,7 +110,9 @@ class VoiceLoader:
         except Exception as final_error:
             raise RuntimeError(f"❌ Could not load {file_path}: {final_error}")
 
-    def convert_loaded_data_to_tensor(self, data: Union[torch.Tensor, Dict, np.ndarray]) -> torch.Tensor:
+    def convert_loaded_data_to_tensor(
+        self, data: Union[torch.Tensor, Dict, np.ndarray]
+    ) -> torch.Tensor:
         """Convert loaded data to a PyTorch tensor regardless of original format"""
         if isinstance(data, torch.Tensor):
             return data
@@ -109,19 +120,21 @@ class VoiceLoader:
             return torch.from_numpy(data)
         elif isinstance(data, dict):
             # Handle common dictionary structures
-            if 'voice_vector' in data:
-                return self.convert_loaded_data_to_tensor(data['voice_vector'])
-            elif 'style' in data:
-                return self.convert_loaded_data_to_tensor(data['style'])
-            elif 'tensor' in data:
-                return self.convert_loaded_data_to_tensor(data['tensor'])
+            if "voice_vector" in data:
+                return self.convert_loaded_data_to_tensor(data["voice_vector"])
+            elif "style" in data:
+                return self.convert_loaded_data_to_tensor(data["style"])
+            elif "tensor" in data:
+                return self.convert_loaded_data_to_tensor(data["tensor"])
             else:
                 # Try to find any tensor-like data in the dict
                 for key, value in data.items():
                     if isinstance(value, (torch.Tensor, np.ndarray)):
                         print(f"Found tensor data in key: {key}")
                         return self.convert_loaded_data_to_tensor(value)
-                raise ValueError(f"No tensor data found in dictionary. Keys: {list(data.keys())}")
+                raise ValueError(
+                    f"No tensor data found in dictionary. Keys: {list(data.keys())}"
+                )
         else:
             raise TypeError(f"Cannot convert {type(data)} to tensor")
 
@@ -153,31 +166,37 @@ class VoiceLoader:
 
         if self.risky_files:
             report.append("🚨 RISKY FILES LOADED:")
-            report.append("These files required unsafe loading. Consider redownloading or repairing them within a secure environment.")
+            report.append(
+                "These files required unsafe loading. Consider redownloading or repairing them within a secure environment."
+            )
             for file in self.risky_files:
                 report.append(f"  - {file}")
 
             return "\n".join(report)
         return
 
+
 # Usage functions for backward compatibility
-def load_voice_safely(file_path: str,
-                      auto_allow_unsafe: bool = False,
-                      auto_deny_unsafe: bool = False) -> Optional[torch.Tensor]:
+def load_voice_safely(
+    file_path: str, auto_allow_unsafe: bool = False, auto_deny_unsafe: bool = False
+) -> Optional[torch.Tensor]:
     """Standalone function for loading a single voice file"""
     loader = VoiceLoader(auto_allow_unsafe, auto_deny_unsafe)
     result = loader.load_voice_safely(file_path)
 
     # Print report if there were any issues
     report = loader.get_risk_report()
-    if report: print(f"\n{report}")
+    if report:
+        print(f"\n{report}")
 
     return result
 
 
-def load_multiple_voices(file_paths: List[str],
-                         auto_allow_unsafe: bool = False,
-                         auto_deny_unsafe: bool = False) -> Dict[str, torch.Tensor]:
+def load_multiple_voices(
+    file_paths: List[str],
+    auto_allow_unsafe: bool = False,
+    auto_deny_unsafe: bool = False,
+) -> Dict[str, torch.Tensor]:
     """Load multiple voice files with shared user preferences"""
     loader = VoiceLoader(auto_allow_unsafe, auto_deny_unsafe)
     voices = {}

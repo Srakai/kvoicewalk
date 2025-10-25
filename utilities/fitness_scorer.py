@@ -1,7 +1,9 @@
 import datetime
+import random
 import warnings
 from datetime import timedelta
-from typing import Any
+from pathlib import Path
+from typing import Any, List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -11,7 +13,7 @@ from speechbrain.inference.speaker import SpeakerRecognition
 from torch import FloatTensor
 from torchaudio.prototype.transforms import ChromaSpectrogram
 
-from utilities.kvw_informer import KVW_Informer
+from utilities.util import get_device
 from utilities.speech_generator import SpeechGenerator
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -21,23 +23,32 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # TODO: Review SpeechBrain Feature Extraction & Analysis
 # TODO: Revisit Scoring Calculations
 
+
 class FitnessScorer:
-    def __init__(self, target_wav: str, kvw_informer: KVW_Informer, speech_generator: SpeechGenerator,
-                 device: str = 'cuda'):
+    def __init__(
+        self,
+        target_wav: str,
+        speech_generator: SpeechGenerator,
+        device: str = None,
+        target_audio_chunks: Optional[List[Tuple[Path, str, float, float]]] = None,
+    ):
         """
         Initialize FitnessScorer with GPU optimization.
 
         Args:
             target_wav: Path to target audio file
-            device: Device to use ('cuda' or 'cpu')
+            speech_generator: SpeechGenerator instance
+            device: Device to use ('mps', 'cuda' or 'cpu'). If None, auto-detects best device.
+            target_audio_chunks: Optional list of (chunk_path, transcription, start_time, end_time) tuples
+                                for chunked processing of long audio files
         """
-        self.kvw_informer = kvw_informer
         self.speech_generator = speech_generator
-        self.log_view = self.kvw_informer.settings['fitness_logs']
-        self.process_times = self.kvw_informer.settings['tps_reports']
-        self.feature_times = self.kvw_informer.settings['feature_times']
-        self.device = device if torch.cuda.is_available() else 'cpu'
+        self.log_view = False
+        self.process_times = False
+        self.feature_times = False
+        self.device = device if device is not None else get_device()
         self.target_wav = target_wav
+        self.target_audio_chunks = target_audio_chunks
 
         # Constants
         self.sr = 24000
@@ -48,39 +59,56 @@ class FitnessScorer:
         self.n_bands = 6
         # Initialize Audio Analysis Classes and Objects on GPU
         self.verification = SpeakerRecognition.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb",
-            run_opts={"device": self.device}
+            source="speechbrain/spkrec-ecapa-voxceleb", run_opts={"device": self.device}
         )
 
         # Preload Frequency bins
-        self.freqs = torch.fft.fftfreq(self.n_fft, 1 / self.sr)[:self.n_fft // 2 + 1].to(device)
+        self.freqs = torch.fft.fftfreq(self.n_fft, 1 / self.sr)[
+            : self.n_fft // 2 + 1
+        ].to(self.device)
 
         # Preload Mel spectrogram
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
-            sample_rate=self.sr, n_fft=self.n_fft, hop_length=self.hop_length, n_mels=self.n_mels).to(device)
+            sample_rate=self.sr,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            n_mels=self.n_mels,
+        ).to(self.device)
         # Preload MFCCs
         self.mfcc_transform = torchaudio.transforms.MFCC(
-            sample_rate=self.sr, n_mfcc=13,
-            melkwargs={'n_fft': self.n_fft, 'hop_length': self.hop_length, 'n_mels': self.n_mels}).to(device)
+            sample_rate=self.sr,
+            n_mfcc=13,
+            melkwargs={
+                "n_fft": self.n_fft,
+                "hop_length": self.hop_length,
+                "n_mels": self.n_mels,
+            },
+        ).to(self.device)
 
         # Preload Chroma transform
-        self.chroma_transform = ChromaSpectrogram(sample_rate=self.sr, n_fft=self.n_fft, hop_length=self.hop_length).to(
-            device)
+        self.chroma_transform = ChromaSpectrogram(
+            sample_rate=self.sr, n_fft=self.n_fft, hop_length=self.hop_length
+        ).to(self.device)
 
         # Preload Tonnetz transformation matrix (6x12) - standard musicology matrix
-        self.tonnetz_matrix = torch.tensor([
-            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],  # Circle of fifths
-            [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],  # Circle of fifths offset
-            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],  # Minor thirds
-            [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],  # Minor thirds offset
-            [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],  # Minor thirds offset2
-            [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0]  # Major thirds
-        ], dtype=torch.float32, device=device)
+        self.tonnetz_matrix = torch.tensor(
+            [
+                [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],  # Circle of fifths
+                [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],  # Circle of fifths offset
+                [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],  # Minor thirds
+                [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],  # Minor thirds offset
+                [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1],  # Minor thirds offset2
+                [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0],  # Major thirds
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
 
         self.bands = torch.logspace(
             torch.log10(torch.tensor(self.fmin)),
             torch.log10(torch.tensor(self.sr / 2)),
-            self.n_bands + 1).to(device)
+            self.n_bands + 1,
+        ).to(self.device)
 
         # Precompute band masks
         self.band_masks = []
@@ -89,26 +117,81 @@ class FitnessScorer:
             self.band_masks.append(band_mask)
 
         # Preload contrast values
-        self.contrast_values = torch.zeros(self.n_bands, device=device)
+        self.contrast_values = torch.zeros(self.n_bands, device=self.device)
 
         # Preload target audio tensor to GPU (do this once!)
-        self._target_tensor = self.verification.load_audio(target_wav).to(self.device)
-        self.batch_target = self._target_tensor.unsqueeze(0)
-        self.emb1 = self.verification.encode_batch(self.batch_target, None, normalize=False)
-        if self.log_view is True: self.kvw_informer.log_gpu_memory(
-            f"Target audio loaded to {self._target_tensor.device}", self.log_view)
+        # If using chunks, we'll load them on-demand; otherwise load the full file
+        if target_audio_chunks:
+            print(f"Using chunked mode with {len(target_audio_chunks)} chunks")
+            # Pre-compute embeddings and features for all chunks
+            self._chunk_embeddings = []
+            self._chunk_features = []
 
-        # Pre-compute target features for feature penalty calculation
-        target_audio_numpy = self._target_tensor.cpu().numpy()
-        self.target_features = self.extract_features(target_audio_numpy)
-        if self.log_view is True: self.kvw_informer.log_gpu_memory(
-            f"Extracted {len(self.target_features)} target features", self.log_view)
+            for chunk_path, chunk_text, start_time, end_time in target_audio_chunks:
+                chunk_tensor = self.verification.load_audio(str(chunk_path)).to(
+                    self.device
+                )
+                batch_chunk = chunk_tensor.unsqueeze(0)
+                chunk_emb = self.verification.encode_batch(
+                    batch_chunk, None, normalize=False
+                )
 
-    def hybrid_similarity(self, best_results: dict[str, Any], audio_array: NDArray[np.float32] | torch.Tensor,
-                          audio_embed1: torch.Tensor, other_text: str,
-                          voice_tensor: NDArray[np.float32] | torch.Tensor,
-                          target_similarity: float, results: dict[str, Any]) -> tuple[dict[
-        str, Any], timedelta, timedelta, timedelta] | tuple[dict[str, Any], timedelta, float, float]:
+                chunk_audio_numpy = chunk_tensor.cpu().numpy()
+                chunk_features = self.extract_features(chunk_audio_numpy)
+
+                self._chunk_embeddings.append(chunk_emb)
+                self._chunk_features.append(chunk_features)
+
+            # For compatibility, set the first chunk as default
+            self._target_tensor = self.verification.load_audio(
+                str(target_audio_chunks[0][0])
+            ).to(self.device)
+            self.batch_target = self._target_tensor.unsqueeze(0)
+            self.emb1 = self._chunk_embeddings[0]
+            self.target_features = self._chunk_features[0]
+        else:
+            # Original behavior: load full audio file
+            self._target_tensor = self.verification.load_audio(target_wav).to(
+                self.device
+            )
+            self.batch_target = self._target_tensor.unsqueeze(0)
+            self.emb1 = self.verification.encode_batch(
+                self.batch_target, None, normalize=False
+            )
+            # Pre-compute target features for feature penalty calculation
+            target_audio_numpy = self._target_tensor.cpu().numpy()
+            self.target_features = self.extract_features(target_audio_numpy)
+
+    def _select_random_chunk(self):
+        """
+        Randomly select a chunk for evaluation when using chunked mode.
+        Updates self.emb1 and self.target_features to the selected chunk.
+        """
+        if not self.target_audio_chunks:
+            return  # Not using chunks, nothing to do
+
+        # Randomly select a chunk
+        chunk_idx = random.randint(0, len(self.target_audio_chunks) - 1)
+
+        # Update the target embedding and features to the selected chunk
+        self.emb1 = self._chunk_embeddings[chunk_idx]
+        self.target_features = self._chunk_features[chunk_idx]
+
+        return chunk_idx
+
+    def hybrid_similarity(
+        self,
+        best_results: dict[str, Any],
+        audio_array: NDArray[np.float32] | torch.Tensor,
+        audio_embed1: torch.Tensor,
+        other_text: str,
+        voice_tensor: NDArray[np.float32] | torch.Tensor,
+        target_similarity: float,
+        results: dict[str, Any],
+    ) -> (
+        tuple[dict[str, Any], timedelta, timedelta, timedelta]
+        | tuple[dict[str, Any], timedelta, float, float]
+    ):
         """
         Calculate hybrid similarity score combining target similarity, self similarity, and feature similarity.
         GPU-compatible version that accepts both numpy arrays and tensors.
@@ -129,12 +212,10 @@ class FitnessScorer:
         audio_tensor1 = audio_array
         # Extract features using GPU-optimized method
         # Target feature extraction
-        if self.log_view is True: self.kvw_informer.log_gpu_memory("Evaluating Feature Sim", self.log_view)
         feature_start = datetime.datetime.now()
         features = self.extract_features(audio_tensor1)
 
         # Calculate target feature penalty
-        if self.log_view is True: self.kvw_informer.log_gpu_memory("Evaluating Target Feature Penalty", self.log_view)
         # target_penalty_start = datetime.datetime.now()
         target_features_penalty = self.target_feature_penalty(features)
         # target_penalty_time = datetime.datetime.now() - target_penalty_start
@@ -148,11 +229,12 @@ class FitnessScorer:
         # Added a check for feature similarity within a certain bounds, to avoid audio2 gen if possible
         if feature_similarity >= best_results["feature_similarity"] - 0.1:
             audio2_start = datetime.datetime.now()
-            audio2_array = self.speech_generator.generate_audio(other_text, voice_tensor)
+            audio2_array = self.speech_generator.generate_audio(
+                other_text, voice_tensor
+            )
             audio2_time = datetime.datetime.now() - audio2_start
 
             # Calculate self similarity with tensors
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Evaluating Self Sim", self.log_view)
             self_sim_start = datetime.datetime.now()
             self_similarity = self.self_similarity(audio_embed1, audio2_array)
             self_sim_time = datetime.datetime.now() - self_sim_start
@@ -166,28 +248,96 @@ class FitnessScorer:
             # Harmonic mean calculation (unweighted as per current implementation)
             # Harmonic mean heavily penalizes low scores, encouraging balanced improvement
             score = len(values) / np.sum(1.0 / values)
-            results.update({
-                "score": float(score),
-                "target_similarity": float(target_similarity),
-                "self_similarity": float(self_similarity),
-                "feature_similarity": float(feature_similarity),
-                # "weights": weights.tolist()  # Include weights for potential future use
-            })
+            results.update(
+                {
+                    "score": float(score),
+                    "target_similarity": float(target_similarity),
+                    "self_similarity": float(self_similarity),
+                    "feature_similarity": float(feature_similarity),
+                    # "weights": weights.tolist()  # Include weights for potential future use
+                }
+            )
             return results, feature_time, audio2_time, self_sim_time
         else:
-            results.update({
-                "score": 0.0,
-                "target_similarity": float(target_similarity),
-                "self_similarity": 0.0,
-                "feature_similarity": float(feature_similarity),
-                # "weights": weights.tolist()  # Include weights for potential future use
-            })
+            results.update(
+                {
+                    "score": 0.0,
+                    "target_similarity": float(target_similarity),
+                    "self_similarity": 0.0,
+                    "feature_similarity": float(feature_similarity),
+                    # "weights": weights.tolist()  # Include weights for potential future use
+                }
+            )
             audio2_time = 0.0
             self_sim_time = 0.0
 
             return results, feature_time, audio2_time, self_sim_time
 
-    def target_similarity(self, audio_tensor: torch.Tensor | NDArray[np.float32]) -> tuple[float, FloatTensor, Any]:
+    def score_voice(
+        self,
+        best_results: dict[str, Any],
+        voice_tensor: torch.Tensor,
+        min_similarity: float = 0.0,
+    ) -> tuple[dict[str, Any], str]:
+        start_time = datetime.datetime.now()
+
+        # If using chunks, randomly select one for this evaluation
+        if self.target_audio_chunks:
+            chunk_idx = self._select_random_chunk()
+
+        audio_start = datetime.datetime.now()
+        voice_tensor = voice_tensor.detach().to(
+            self.speech_generator.device, dtype=torch.float32
+        )
+        audio_tensor = self.speech_generator.generate_audio(
+            self.speech_generator.target_text, voice_tensor
+        )
+        audio_time = datetime.datetime.now() - audio_start
+
+        audio_detached = audio_tensor.detach()
+        audio_numpy = audio_detached.cpu().numpy()
+        results: dict[str, Any] = {"audio": audio_numpy}
+
+        target_sim_start = datetime.datetime.now()
+        target_sim, audio_float_tensor, audio_embed1 = self.target_similarity(
+            audio_detached
+        )
+        target_sim_time = datetime.datetime.now() - target_sim_start
+
+        if target_sim > min_similarity:
+            results, feature_sim_time, audio2_time, self_sim_time = (
+                self.hybrid_similarity(
+                    best_results,
+                    audio_float_tensor,
+                    audio_embed1,
+                    self.speech_generator.other_text,
+                    voice_tensor,
+                    target_sim,
+                    results,
+                )
+            )
+            total_time = datetime.datetime.now() - start_time
+            if audio2_time and self_sim_time:
+                tps_report = (
+                    "Process Times: Audio1 gen: "
+                    f"{audio_time.total_seconds():.3f}s, Audio2 gen: "
+                    f"{audio2_time.total_seconds():.3f}s, Target Sim: "
+                    f"{target_sim_time.total_seconds():.3f}s,  Self Sim: "
+                    f"{self_sim_time.total_seconds():.3f}s, Feat Sim: "
+                    f"{feature_sim_time.total_seconds():.3f}s, Total: "
+                    f"{total_time.total_seconds():.3f}s"
+                )
+                if self.target_audio_chunks:
+                    tps_report += f" [Chunk {chunk_idx}]"
+                return results, tps_report
+
+        results["score"] = 0.0
+        results["target_similarity"] = target_sim
+        return results, ""
+
+    def target_similarity(
+        self, audio_tensor: torch.Tensor | NDArray[np.float32]
+    ) -> tuple[float, FloatTensor, Any]:
         """
         Calculate similarity between generated audio and target audio.voice = voice.to(device)
         GPU-optimized version using direct tensor operations.
@@ -199,10 +349,12 @@ class FitnessScorer:
             Similarity score (float)
         """
         # Ensure input is a tensor on the correct device
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = get_device()
 
         if isinstance(audio_tensor, np.ndarray):
-            audio_float_tensor = torch.from_numpy(audio_tensor.astype(np.float32)).to(device)
+            audio_float_tensor = torch.from_numpy(audio_tensor.astype(np.float32)).to(
+                device
+            )
         else:
             audio_float_tensor = audio_tensor.to(device).float()
 
@@ -211,10 +363,14 @@ class FitnessScorer:
             audio_float_tensor = torch.mean(audio_tensor, dim=-1)
 
         # Use preloaded target tensor (set in __init__)
-        if not hasattr(self, 'emb1'):
-            self._target_tensor = self.verification.load_audio(self.target_wav).to(device)
+        if not hasattr(self, "emb1"):
+            self._target_tensor = self.verification.load_audio(self.target_wav).to(
+                device
+            )
             self.batch_target = self._target_tensor
-            self.emb1 = self.verification.encode_batch(self.batch_target, None, normalize=False)
+            self.emb1 = self.verification.encode_batch(
+                self.batch_target, None, normalize=False
+            )
 
         # Create batch for SpeechBrain
         batch_audio = audio_float_tensor.unsqueeze(0)
@@ -234,7 +390,7 @@ class FitnessScorer:
         Returns:
             Penalty score (lower is better, 0 = perfect match)
         """
-        if not hasattr(self, 'target_features') or not self.target_features:
+        if not hasattr(self, "target_features") or not self.target_features:
             # If no target features are available, return neutral penalty
             return 50.0
 
@@ -281,8 +437,11 @@ class FitnessScorer:
         average_penalty = penalty / feature_count
         return float(average_penalty * 100.0)
 
-    def self_similarity(self, audio_tensor1: torch.Tensor | NDArray[np.float32],
-                        audio_tensor2: torch.Tensor | NDArray[np.float32]) -> float:
+    def self_similarity(
+        self,
+        audio_tensor1: torch.Tensor | NDArray[np.float32],
+        audio_tensor2: torch.Tensor | NDArray[np.float32],
+    ) -> float:
         """
         Calculate self-similarity between two audio samples from the same voice.
         GPU-optimized version using direct tensor operations.
@@ -294,10 +453,12 @@ class FitnessScorer:
         Returns:
             Self-similarity score (float)
         """
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = get_device()
 
         if isinstance(audio_tensor2, np.ndarray):
-            audio_tensor2 = torch.from_numpy(audio_tensor2.astype(np.float32)).to(device)
+            audio_tensor2 = torch.from_numpy(audio_tensor2.astype(np.float32)).to(
+                device
+            )
         else:
             audio_tensor2 = audio_tensor2.to(device).float()
 
@@ -314,7 +475,9 @@ class FitnessScorer:
 
         return float(score[0])
 
-    def extract_features(self, audio_array: NDArray[np.float32] | NDArray[np.float64] | torch.Tensor) -> dict[str, Any]:
+    def extract_features(
+        self, audio_array: NDArray[np.float32] | NDArray[np.float64] | torch.Tensor
+    ) -> dict[str, Any]:
         """
         Extract a comprehensive set of audio features for fingerprinting speech segments.
         GPU-optimized version using torchaudio where possible.
@@ -328,7 +491,9 @@ class FitnessScorer:
         start = datetime.datetime.now()
         # Convert input to tensor and ensure it's on GPU
         if isinstance(audio_array, np.ndarray):
-            audio_tensor = torch.from_numpy(audio_array.astype(np.float32)).to(self.device)
+            audio_tensor = torch.from_numpy(audio_array.astype(np.float32)).to(
+                self.device
+            )
         else:
             audio_tensor = audio_array.to(self.device).float()
 
@@ -341,42 +506,68 @@ class FitnessScorer:
 
         # Initialize features dictionary
         features = {}
-        if self.feature_times is True: print(
-            f"Feature Prep Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+        if self.feature_times is True:
+            print(
+                f"Feature Prep Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+            )
         # ===== GPU-ACCELERATED FEATURES =====
         with torch.no_grad():
             start = datetime.datetime.now()
             # Basic features - GPU
-            features["rms_energy"] = float(torch.sqrt(torch.mean(audio_tensor ** 2)).item())
+            features["rms_energy"] = float(
+                torch.sqrt(torch.mean(audio_tensor**2)).item()
+            )
 
             # Zero crossing rate - GPU implementation
             zero_crossings = torch.diff(torch.sign(audio_tensor), dim=0)
-            features["zero_crossing_rate"] = float(torch.mean(torch.abs(zero_crossings)).item() / 2.0)
+            features["zero_crossing_rate"] = float(
+                torch.mean(torch.abs(zero_crossings)).item() / 2.0
+            )
 
             # STFT for spectral features - GPU
-            stft = torch.stft(audio_tensor, n_fft=self.n_fft, hop_length=self.hop_length,
-                              win_length=self.n_fft, return_complex=True, center=True)
-            magnitude = torch.abs(stft)
-            power = magnitude ** 2
+            stft = torch.stft(
+                audio_tensor,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.n_fft,
+                return_complex=True,
+                center=True,
+            )
+            magnitude = torch.abs(stft).to(self.device)
+            power = magnitude**2
 
             # Spectral centroid - GPU
             weighted_freqs = self.freqs.unsqueeze(1) * magnitude
-            spectral_centroids = torch.sum(weighted_freqs, dim=0) / (torch.sum(magnitude, dim=0) + 1e-8)
-            features["spectral_centroid_mean"] = float(torch.mean(spectral_centroids).item())
-            features["spectral_centroid_std"] = float(torch.std(spectral_centroids).item())
+            spectral_centroids = torch.sum(weighted_freqs, dim=0) / (
+                torch.sum(magnitude, dim=0) + 1e-8
+            )
+            features["spectral_centroid_mean"] = float(
+                torch.mean(spectral_centroids).item()
+            )
+            features["spectral_centroid_std"] = float(
+                torch.std(spectral_centroids).item()
+            )
 
             # Spectral bandwidth - GPU
             freq_diff = (self.freqs.unsqueeze(1) - spectral_centroids.unsqueeze(0)) ** 2
             spectral_bandwidth = torch.sqrt(
-                torch.sum(freq_diff * magnitude, dim=0) / (torch.sum(magnitude, dim=0) + 1e-8))
-            features["spectral_bandwidth_mean"] = float(torch.mean(spectral_bandwidth).item())
-            features["spectral_bandwidth_std"] = float(torch.std(spectral_bandwidth).item())
+                torch.sum(freq_diff * magnitude, dim=0)
+                / (torch.sum(magnitude, dim=0) + 1e-8)
+            )
+            features["spectral_bandwidth_mean"] = float(
+                torch.mean(spectral_bandwidth).item()
+            )
+            features["spectral_bandwidth_std"] = float(
+                torch.std(spectral_bandwidth).item()
+            )
 
             # Spectral rolloff - GPU (85% of spectral energy)
             cumsum_power = torch.cumsum(power, dim=0)
             total_power = torch.sum(power, dim=0)
             rolloff_thresh = 0.85 * total_power
-            rolloff_indices = torch.argmax((cumsum_power >= rolloff_thresh.unsqueeze(0)).float(), dim=0)
+            rolloff_indices = torch.argmax(
+                (cumsum_power >= rolloff_thresh.unsqueeze(0)).float(), dim=0
+            )
             rolloff_freqs = self.freqs[rolloff_indices]
             features["spectral_rolloff_mean"] = float(torch.mean(rolloff_freqs).item())
             features["spectral_rolloff_std"] = float(torch.std(rolloff_freqs).item())
@@ -385,8 +576,10 @@ class FitnessScorer:
             features["mel_spec_mean"] = float(torch.mean(mel_spec).item())
             features["mel_spec_std"] = float(torch.std(mel_spec).item())
 
-            if self.feature_times is True: print(
-                f"Spectral Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"Spectral Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
             start = datetime.datetime.now()
 
             mfccs = self.mfcc_transform(audio_tensor.unsqueeze(0)).squeeze(0)
@@ -409,8 +602,10 @@ class FitnessScorer:
                 features[f"mfcc{i + 1}delta_mean"] = float(mfcc_delta_means[i].item())
                 features[f"mfcc{i + 1}delta_std"] = float(mfcc_delta_stds[i].item())
 
-            if self.feature_times is True: print(
-                f"MFCC Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"MFCC Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
             start = datetime.datetime.now()
 
             # Spectral flatness - GPU
@@ -427,7 +622,9 @@ class FitnessScorer:
                     continue
 
                 # Get magnitude in this band
-                band_mag = magnitude[band_mask, :]  # Use the current band_mask from loop
+                band_mag = magnitude[
+                    band_mask, :
+                ]  # Use the current band_mask from loop
 
                 # Calculate contrast (peak vs valley)
                 if band_mag.numel() > 0:
@@ -436,12 +633,16 @@ class FitnessScorer:
 
                     # Peak: mean of top 20% values
                     top_k = max(1, int(0.2 * band_flat.shape[0]))
-                    peaks, _ = torch.topk(band_flat, top_k, dim=0)  # Fix: band_flat not band*flat
+                    peaks, _ = torch.topk(
+                        band_flat, top_k, dim=0
+                    )  # Fix: band_flat not band*flat
                     peak_val = torch.mean(peaks)
 
                     # Valley: mean of bottom 20% values
                     bottom_k = max(1, int(0.2 * band_flat.shape[0]))
-                    valleys, _ = torch.topk(band_flat, bottom_k, dim=0, largest=False)  # Fix: band_flat
+                    valleys, _ = torch.topk(
+                        band_flat, bottom_k, dim=0, largest=False
+                    )  # Fix: band_flat
                     valley_val = torch.mean(valleys)
 
                     # Contrast ratio
@@ -450,11 +651,17 @@ class FitnessScorer:
                     self.contrast_values[i] = 0.0
 
             # After the loop, compute final features
-            features["spectral_contrast_mean"] = float(torch.mean(self.contrast_values).item())
-            features["spectral_contrast_std"] = float(torch.std(self.contrast_values).item())
+            features["spectral_contrast_mean"] = float(
+                torch.mean(self.contrast_values).item()
+            )
+            features["spectral_contrast_std"] = float(
+                torch.std(self.contrast_values).item()
+            )
 
-            if self.feature_times is True: print(
-                f"Spectral Flatness and Contrast Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"Spectral Flatness and Contrast Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
             start = datetime.datetime.now()
 
             # Energy features - GPU
@@ -465,7 +672,7 @@ class FitnessScorer:
             features["energy_std"] = float(torch.std(energy).item())
 
             # Harmonics-to-noise ratio - GPU
-            S_squared = magnitude ** 2
+            S_squared = magnitude**2
             S_mean = torch.mean(S_squared, dim=1)
             S_std = torch.std(S_squared, dim=1)
             S_ratio = S_mean / (S_std + 1e-8)
@@ -475,8 +682,10 @@ class FitnessScorer:
             features["audio_mean"] = float(torch.mean(audio_tensor).item())
             features["audio_std"] = float(torch.std(audio_tensor).item())
 
-            if self.feature_times is True: print(
-                f"Energy Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"Energy Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
             start = datetime.datetime.now()
 
             # Chroma features - GPU using torchaudio.prototype
@@ -500,8 +709,10 @@ class FitnessScorer:
             # Normalize chroma (avoid division by zero)
             chroma_norm = chroma / (torch.sum(chroma, dim=0, keepdim=True) + 1e-8)
 
-            if self.feature_times is True: print(
-                f"Chroma Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"Chroma Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
             start = datetime.datetime.now()
 
             # Apply Tonnetz transformation
@@ -511,8 +722,10 @@ class FitnessScorer:
             features["tonnetz_mean"] = float(torch.mean(tonnetz).item())
             features["tonnetz_std"] = float(torch.std(tonnetz).item())
 
-            if self.feature_times is True: print(
-                f"Tonnetz Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"Tonnetz Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
             start = datetime.datetime.now()
 
             # Statistical features - GPU implementation
@@ -521,15 +734,17 @@ class FitnessScorer:
             normalized = (audio_tensor - audio_mean) / (audio_std + 1e-8)
 
             # Skewness (third moment)
-            skewness = torch.mean(normalized ** 3)
+            skewness = torch.mean(normalized**3)
             features["audio_skew"] = float(skewness.item())
 
             # Kurtosis (fourth moment minus 3)
-            kurtosis = torch.mean(normalized ** 4) - 3.0
+            kurtosis = torch.mean(normalized**4) - 3.0
             features["audio_kurtosis"] = float(kurtosis.item())
 
-            if self.feature_times is True: print(
-                f"Statistics Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"Statistics Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
             start = datetime.datetime.now()
 
             # Extract Kaldi pitch for better quality filtering
@@ -542,8 +757,7 @@ class FitnessScorer:
 
                 # Kaldi pitch computation
                 pitch = torchaudio.functional.detect_pitch_frequency(
-                    audio_for_pitch,
-                    sample_rate=self.sr
+                    audio_for_pitch, sample_rate=self.sr
                 )
 
                 # pitch shape: [channels, frames] - pitch values in Hz
@@ -557,7 +771,9 @@ class FitnessScorer:
                     features["pitch_mean"] = float(torch.mean(valid_pitches).item())
                     features["pitch_std"] = float(torch.std(valid_pitches).item())
                     # No confidence score available with detect_pitch_frequency
-                    features["pitch_confidence_mean"] = 1.0  # Placeholder since all detected pitches are "confident"
+                    features["pitch_confidence_mean"] = (
+                        1.0  # Placeholder since all detected pitches are "confident"
+                    )
                 else:
                     features["pitch_mean"] = 0.0
                     features["pitch_std"] = 0.0
@@ -569,8 +785,10 @@ class FitnessScorer:
                 features["pitch_std"] = 0.0
                 features["pitch_confidence_mean"] = 0.0
 
-            if self.feature_times is True: print(
-                f"Pitch Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}")
+            if self.feature_times is True:
+                print(
+                    f"Pitch Analysis Time: {(datetime.datetime.now() - start).total_seconds():.3f}"
+                )
 
         # TODO: add tempo, rhythm support... BeatNet won't work for this!
         # # BeatNet expects numpy format
