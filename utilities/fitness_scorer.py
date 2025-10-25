@@ -239,33 +239,42 @@ class FitnessScorer:
             self_similarity = self.self_similarity(audio_embed1, audio2_array)
             self_sim_time = datetime.datetime.now() - self_sim_start
 
-            # Prepare values for scoring
-            values = np.array([target_similarity, self_similarity, feature_similarity])
+            # Optimized weights from tune_weights.py experiment:
+            # target_similarity:  1.0000
+            # self_similarity:    0.0000
+            # feature_similarity: 0.0000
+            # Separation Score: 0.0659
+            #
+            # This means the scoring function should focus purely on target similarity,
+            # as the experiment found that self and feature similarity don't help separate voices.
+            weights = np.array([1.0, 0.0, 0.0])
 
-            # Weights for potential future use (currently using unweighted harmonic mean)
-            # weights = np.array([0.48, 0.5, 0.02])
+            # Weighted sum using optimized weights
+            score = (
+                weights[0] * target_similarity
+                + weights[1] * self_similarity
+                + weights[2] * feature_similarity
+            )
 
-            # Harmonic mean calculation (unweighted as per current implementation)
-            # Harmonic mean heavily penalizes low scores, encouraging balanced improvement
-            score = len(values) / np.sum(1.0 / values)
             results.update(
                 {
                     "score": float(score),
                     "target_similarity": float(target_similarity),
                     "self_similarity": float(self_similarity),
                     "feature_similarity": float(feature_similarity),
-                    # "weights": weights.tolist()  # Include weights for potential future use
+                    "weights": weights.tolist(),
                 }
             )
             return results, feature_time, audio2_time, self_sim_time
         else:
+            weights = np.array([1.0, 0.0, 0.0])
             results.update(
                 {
                     "score": 0.0,
                     "target_similarity": float(target_similarity),
                     "self_similarity": 0.0,
                     "feature_similarity": float(feature_similarity),
-                    # "weights": weights.tolist()  # Include weights for potential future use
+                    "weights": weights.tolist(),
                 }
             )
             audio2_time = 0.0

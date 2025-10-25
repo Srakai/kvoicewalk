@@ -341,18 +341,18 @@ class KVoiceWalk:
         # Load checkpoint if resuming
         if resume_checkpoint:
             checkpoint_path = Path(resume_checkpoint)
-            if not checkpoint_path.exists():
+            if checkpoint_path.exists():
+                # When resuming, load checkpoint directly (it contains the CMA-ES state)
+                optimizer.load_checkpoint(checkpoint_path, verbose=verbose)
+            else:
                 print(f"Warning: Checkpoint not found: {resume_checkpoint}")
                 print("Starting fresh run instead...")
-                resume_checkpoint = None
-
-        if not resume_checkpoint:
-            optimizer.initialize(initial_voice, self.voice_generator, verbose=verbose)
+                optimizer.initialize(
+                    initial_voice, self.voice_generator, verbose=verbose
+                )
         else:
-            # Initialize first (required for structure)
-            optimizer.initialize(initial_voice, self.voice_generator, verbose=False)
-            # Then load checkpoint
-            optimizer.load_checkpoint(Path(resume_checkpoint), verbose=verbose)
+            # Fresh run - initialize with starting voice
+            optimizer.initialize(initial_voice, self.voice_generator, verbose=verbose)
 
         # Run optimization
         best_embedding, best_fitness, best_details = optimizer.optimize(

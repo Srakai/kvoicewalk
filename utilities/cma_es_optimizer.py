@@ -2,6 +2,7 @@
 
 import datetime
 import os
+import pickle
 from pathlib import Path
 from typing import Any, Callable, Optional, Tuple
 
@@ -149,8 +150,8 @@ class CMAESOptimizer:
         self.fitness_history = checkpoint_data["fitness_history"]
         self.evaluation_history = checkpoint_data["evaluation_history"]
 
-        # Restore CMA-ES state
-        self.es = cma.CMAEvolutionStrategy.pickle_loads(checkpoint_data["cma_state"])
+        # Restore CMA-ES state from pickled data
+        self.es = pickle.loads(checkpoint_data["cma_state"])
 
         # Load best embedding
         best_path = checkpoint_path.with_suffix(".best.pt")
@@ -158,10 +159,20 @@ class CMAESOptimizer:
             self.best_ever_embedding = torch.load(best_path, weights_only=False)
 
         if verbose:
-            print(f"Checkpoint loaded: {checkpoint_path}")
+            print(f"\nCheckpoint loaded: {checkpoint_path}")
             print(f"  Resuming from generation {self.generation}")
             print(f"  Total evaluations: {self.total_evaluations}")
             print(f"  Best fitness: {self.best_ever_fitness:.4f}")
+            if self.best_ever_details:
+                print(
+                    f"  Target Similarity: {self.best_ever_details.get('target_similarity', 0):.4f}"
+                )
+                print(
+                    f"  Self Similarity: {self.best_ever_details.get('self_similarity', 0):.4f}"
+                )
+                print(
+                    f"  Feature Similarity: {self.best_ever_details.get('feature_similarity', 0):.4f}"
+                )
 
     def optimize(
         self,

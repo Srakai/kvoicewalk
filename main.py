@@ -84,6 +84,11 @@ def main():
         help="Maximum duration in seconds for audio chunks when processing long files. Default: 30.0. Set to 0 to disable chunking.",
         default=30.0,
     )
+    parser.add_argument(
+        "--split_by_sentence",
+        help="Split audio chunks only at sentence boundaries, ignoring max_chunk_duration.",
+        action="store_true",
+    )
 
     # Arguments for random walk mode
     group_walk = parser.add_argument_group("Random Walk Mode")
@@ -168,6 +173,11 @@ def main():
         help="Initial step size (exploration radius)",
         default=0.3,
     )
+    group_cmaes.add_argument(
+        "--cmaes_resume_checkpoint",
+        type=str,
+        help="Path to CMA-ES checkpoint file to resume from",
+    )
 
     # Arguments for test mode
     group_test = parser.add_argument_group("Test Mode")
@@ -234,6 +244,7 @@ def main():
                         target_audio_chunks = transcriber.chunk_audio(
                             args.target_audio,
                             max_chunk_duration=args.max_chunk_duration,
+                            split_by_sentence=args.split_by_sentence,
                         )
                         if target_audio_chunks:
                             print(
@@ -399,7 +410,7 @@ def main():
                     population_size=args.cmaes_population,
                     sigma0=args.cmaes_sigma,
                     checkpoint_interval=args.checkpoint_interval,
-                    resume_checkpoint=args.resume_checkpoint,
+                    resume_checkpoint=args.cmaes_resume_checkpoint,
                     verbose=True,
                 )
             else:
