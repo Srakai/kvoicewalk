@@ -6,16 +6,21 @@ import numpy as np
 import soundfile as sf
 from faster_whisper import WhisperModel
 
-from utilities.path_router import TEXTS_DIR, CONVERTED_DIR
+ROOT_DIR = Path(__file__).resolve().parents[1]
+TEXTS_DIR = ROOT_DIR / "texts"
+CONVERTED_DIR = ROOT_DIR / "out" / "converted_audio"
 
 
 def convert_to_wav_mono_24k(audio_path: Path) -> Path:
     try:
-        with sf.SoundFile(audio_path, 'r') as f:
-            if f.format != 'WAV' or f.samplerate != 24000 or f.channels != 1:
+        with sf.SoundFile(audio_path, "r") as f:
+            if f.format != "WAV" or f.samplerate != 24000 or f.channels != 1:
                 print(f"Converting {audio_path.name} to Mono Wav 24K...")
+                CONVERTED_DIR.mkdir(parents=True, exist_ok=True)
                 # Create output filename with proper audio format
-                converted_audio_file = Path(CONVERTED_DIR / str(audio_path.stem + ".wav"))
+                converted_audio_file = Path(
+                    CONVERTED_DIR / str(audio_path.stem + ".wav")
+                )
 
                 # Read the audio data
                 audio_data = f.read()
@@ -30,15 +35,20 @@ def convert_to_wav_mono_24k(audio_path: Path) -> Path:
                 # Resample if needed
                 if f.samplerate != 24000:
                     converted_audio_data = librosa.resample(
-                        converted_audio_data,
-                        orig_sr=f.samplerate,
-                        target_sr=24000
+                        converted_audio_data, orig_sr=f.samplerate, target_sr=24000
                     )
                     # print("Resampled to 24K...")
 
                 # Save converted audio
-                sf.write(converted_audio_file, converted_audio_data, samplerate=24000, format='WAV')
-                print(f"{audio_path.name} converted to Mono WAV 24K format: {converted_audio_file}")
+                sf.write(
+                    converted_audio_file,
+                    converted_audio_data,
+                    samplerate=24000,
+                    format="WAV",
+                )
+                print(
+                    f"{audio_path.name} converted to Mono WAV 24K format: {converted_audio_file}"
+                )
                 return converted_audio_file
             else:
                 # print(f"{audio_path.name} matches Mono WAV 24K format")
@@ -59,7 +69,7 @@ class Transcriber:
         # model = WhisperModel(model_size, device="cuda", compute_type="int8_float16")
 
         # or run on CPU with INT8 !!(more than sufficient for 30s clip)!!
-        self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        self.model = WhisperModel(model_size, device="mps", compute_type="float16")
 
     def transcribe(self, audio_path: Path):
         audio_file = audio_path
@@ -69,8 +79,11 @@ class Transcriber:
             # print(f'Loading {audio_file.name}...')
             segments, info = self.model.transcribe(str(audio_file), beam_size=5)
 
-            print("Detected language '%s' with probability %f" % (info.language, info.language_probability))
-            print(f'Transcribing {audio_file.name}...')
+            print(
+                "Detected language '%s' with probability %f"
+                % (info.language, info.language_probability)
+            )
+            print(f"Transcribing {audio_file.name}...")
 
             transcription = ""
             for segment in segments:
@@ -89,4 +102,5 @@ class Transcriber:
             print(f"Transcription failed for {audio_file.name} - Error: {e}")
             return
 
-#TODO: Integrate into automated workflows
+
+# TODO: Integrate into automated workflows

@@ -8,54 +8,80 @@ from typing import Any
 
 import soundfile as sf
 import torch
-from torch import Tensor
 from tqdm import tqdm
 
 from utilities.fitness_scorer import FitnessScorer
 from utilities.initial_selector import InitialSelector
-from utilities.kvw_informer import KVW_Informer
-from utilities.path_router import OUT_DIR
 from utilities.speech_generator import SpeechGenerator
 from utilities.voice_generator import VoiceGenerator
+from utilities.hybrid_meta_learner import HybridMetaLearner
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+OUT_DIR = ROOT_DIR / "out"
 
 
 class KVoiceWalk:
-    def __init__(self, target_audio: Path, target_text: str, other_text: str, voice_folder: str,
-                 interpolate_start: bool, population_limit: int, starting_voice: str, output_name: str,
-                 kvw_informer: KVW_Informer) -> None:
+    def __init__(
+        self,
+        target_audio: Path,
+        target_text: str,
+        other_text: str,
+        voice_folder: str,
+        interpolate_start: bool,
+        population_limit: int,
+        starting_voice: str,
+        output_name: str,
+    ) -> None:
         try:
-            self.kvw_informer = kvw_informer
-            self.log_view = self.kvw_informer.settings['scoring_results_logs']
-            self.process_times = self.kvw_informer.settings['tps_reports']
-            self.memcache_clear_freq = self.kvw_informer.settings['memcache_clear_iteration_freq']
+            self.memcache_clear_freq = 100
             self.target_audio = target_audio
             self.target_text = target_text
             self.other_text = other_text
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Initializing Speech Generator", self.log_view)
-            self.speech_generator = SpeechGenerator(kvw_informer=self.kvw_informer, target_text=target_text,
-                                                    other_text=other_text)
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Scoring target audio", self.log_view)
-            self.fitness_scorer = FitnessScorer(str(target_audio), kvw_informer=self.kvw_informer,
-                                                speech_generator=self.speech_generator)
-            try:
-                if self.log_view is True: self.kvw_informer.log_gpu_memory("Selecting voices", self.log_view)
-                self.initial_selector = InitialSelector(self.fitness_scorer, self.speech_generator, str(target_audio),
-                                                        target_text, other_text, kvw_informer,
-                                                        voice_folder=voice_folder)
-            except Exception as e:
-                raise Exception(f"Error: {e}")
 
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Selecting starting voices", self.log_view)
-            if interpolate_start:
-                voices = self.initial_selector.interpolate_search(population_limit)
+            # Determine device once
+            from utilities.util import get_device
+
+            self.device = get_device()
+
+            self.speech_generator = SpeechGenerator(
+                target_text=target_text,
+                other_text=other_text,
+                device=self.device,
+            )
+            self.fitness_scorer = FitnessScorer(
+                str(target_audio),
+                speech_generator=self.speech_generator,
+            )
+            # If starting_voice is provided, skip the expensive voice evaluation
+            if starting_voice:
+                from utilities.pytorch_sanitizer import load_voice_safely
+
+                starting_voice_tensor = load_voice_safely(starting_voice)
+                # Use only the starting voice, no need to evaluate all voices
+                voices = [starting_voice_tensor]
+                self.voice_generator = VoiceGenerator(voices, starting_voice)
+                self.starting_voice = self.voice_generator.starting_voice
             else:
-                voices = self.initial_selector.top_performer_start(population_limit)
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Initializing Voice Generator", self.log_view)
-            self.voice_generator = VoiceGenerator(kvw_informer, voices, starting_voice)
-            self.starting_voice = self.voice_generator.starting_voice
-            self.clear_losers_from_memory()
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("After voice_clear during initialization",
-                                                                       self.log_view)
+                # No starting voice provided, evaluate all voices to find best ones
+                try:
+                    self.initial_selector = InitialSelector(
+                        self.fitness_scorer,
+                        self.speech_generator,
+                        str(target_audio),
+                        target_text,
+                        other_text,
+                        voice_folder=voice_folder,
+                    )
+                except Exception as e:
+                    raise Exception(f"Error: {e}")
+
+                if interpolate_start:
+                    voices = self.initial_selector.interpolate_search(population_limit)
+                else:
+                    voices = self.initial_selector.top_performer_start(population_limit)
+                self.voice_generator = VoiceGenerator(voices, starting_voice)
+                self.starting_voice = self.voice_generator.starting_voice
+            self.best_voice = None  # Initialize best_voice as instance attribute
             self.output_name = output_name
 
         except Exception as e:
@@ -66,65 +92,80 @@ class KVoiceWalk:
             print(f"Error initializing KVoicewalk: {e}")
             raise SystemExit
 
-    def random_walk(self,step_limit: int):
-        if self.log_view is True: self.kvw_informer.log_gpu_memory("Scoring initial voice", self.log_view)
+    def random_walk(self, step_limit: int):
         # Score Initial Voice
         t = tqdm()
-        best_voice = self.starting_voice
+        self.best_voice = self.starting_voice
         best_results = {
             "score": 0.0,
             "target_similarity": 0.0,
             "self_similarity": 0.0,
             "feature_similarity": 0.0,
         }
-        best_results, tps_report = self.score_voice(best_results=best_results, voice_tensor=self.starting_voice,
-                                                    min_similarity=-100.0)
-        t.write(f'Target Sim:{best_results["target_similarity"]:.3f}, Self Sim:{best_results["self_similarity"]:.3f}, Feature Sim:{best_results["feature_similarity"]:.2f}, Score:{best_results["score"]:.2f}')
+        best_results, tps_report = self.fitness_scorer.score_voice(
+            best_results=best_results,
+            voice_tensor=self.starting_voice,
+            min_similarity=-100.0,
+        )
+        t.write(
+            f'Target Sim:{best_results["target_similarity"]:.3f}, Self Sim:{best_results["self_similarity"]:.3f}, Feature Sim:{best_results["feature_similarity"]:.2f}, Score:{best_results["score"]:.2f}'
+        )
 
         # Create Results Directory
         now = datetime.datetime.now()
-        results_dir = Path(OUT_DIR / f'{self.output_name}_{self.target_audio.stem}_{now.strftime("%Y%m%d_%H%M%S")}')
+        results_dir = Path(
+            OUT_DIR
+            / f'{self.output_name}_{self.target_audio.stem}_{now.strftime("%Y%m%d_%H%M%S")}'
+        )
         os.makedirs(results_dir, exist_ok=True)
 
         # Random Walk Loop
-        if self.log_view is True: self.kvw_informer.log_gpu_memory("Starting random walk run", self.log_view)
         progress_bar = tqdm(range(step_limit), desc="KVoiceWalk Progress")
         for i in progress_bar:
             # TODO: Expose to CLI
-            diversity = random.uniform(0.01,0.15)
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Generating best voice comparison",
-                                                                       self.log_view)
-            voice = self.voice_generator.generate_voice(best_voice, diversity)
+            diversity = random.uniform(0.01, 0.15)
+            voice = self.voice_generator.generate_voice(self.best_voice, diversity)
 
             # Early function return saves audio generation compute
             min_similarity = best_results["target_similarity"] * 0.98
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Scoring Voice results", self.log_view)
-            voice_results, tps_report = self.score_voice(best_results, voice, min_similarity)
-
-            # Check GPU memory
-            info = self.kvw_informer.log_gpu_memory("GPU Stats", view=self.log_view, console=True)
-            progress_bar.set_postfix_str(f"{info}]")
-            # Per config every # of steps, clear Kpipeline cache
-            if i % self.memcache_clear_freq == 0 and i > 0:
-                self.clear_losers_from_memory()
+            voice_results, tps_report = self.fitness_scorer.score_voice(
+                best_results, voice, min_similarity
+            )
 
             # Set new winner if score is better
             if voice_results["score"] > best_results["score"]:
                 best_results = voice_results
-                best_voice = voice.cpu()
+                # Move to CPU and clean up old best_voice
+                old_voice = self.best_voice
+                self.best_voice = voice.cpu()
+                # Delete the old voice tensor to free memory
+                if old_voice is not None:
+                    del old_voice
+            else:
+                # Clean up voice tensor if it's not the new best
+                del voice
+
+            # Per config every # of steps, clear memory
+            if i % self.memcache_clear_freq == 0 and i > 0:
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
                 try:
-                    t.write(
-                        f'Step:{i:<4} Target Sim:{best_results["target_similarity"]:.3f} Self Sim:{best_results["self_similarity"]:.3f} Feature Sim:{best_results["feature_similarity"]:.3f} Score:{best_results["score"]:.2f} Diversity:{diversity:.2f}')
-                    if self.process_times is True: t.set_postfix_str(f"{info}\n{tps_report}")
+                    progress_bar.write(
+                        f'Step:{i:<4} Target Sim:{best_results["target_similarity"]:.3f} Self Sim:{best_results["self_similarity"]:.3f} Feature Sim:{best_results["feature_similarity"]:.3f} Score:{best_results["score"]:.2f} Diversity:{diversity:.2f}'
+                    )
                 except Exception:
                     print("")
                 # Save results so folks can listen
                 best_voice_name = f'{results_dir}/{self.output_name}_{i}_{best_results["score"]:.2f}_{best_results["target_similarity"]:.2f}_{self.target_audio.stem}.pt'
-                torch.save(best_voice,
-                           best_voice_name)
+                torch.save(self.best_voice, best_voice_name)
                 sf.write(
                     f'{results_dir}/{self.output_name}_{i}_{best_results["score"]:.2f}_{best_results["target_similarity"]:.2f}_{self.target_audio.stem}.wav',
-                    best_results["audio"], 24000)
+                    best_results["audio"],
+                    24000,
+                )
                 # TODO: Add config file for easy restarting runs from last save point
 
         # Print Final Results for Random Walk
@@ -143,67 +184,101 @@ class KVoiceWalk:
             torch.mps.empty_cache()
         return
 
-    # TODO: Move function to fitness_scorer
-    def score_voice(self, best_results: dict[str, Any], voice_tensor: torch.Tensor, min_similarity: float = 0.0) -> \
-    tuple[dict[str, Any], str]:
-        start_time = datetime.datetime.now()
+    def hybrid_meta_learn(
+        self,
+        n_generations: int = 50,
+        ga_population_size: int = 20,
+        ga_elite_size: int = 4,
+        bo_refinement_interval: int = 5,
+        bo_iterations_per_candidate: int = 10,
+        checkpoint_interval: int = 5,
+        resume_checkpoint: str = None,
+        verbose: bool = True,
+    ):
+        """
+        Run hybrid meta-learning optimization combining GA and BO.
 
-        if self.log_view is True: self.kvw_informer.log_gpu_memory("Generating iterated voice audio", self.log_view)
-        # Time audio generation
-        audio_start = datetime.datetime.now()
-        audio = self.speech_generator.generate_audio(self.target_text, voice_tensor)
-        audio = Tensor.cpu(audio).numpy()
-        audio_time = datetime.datetime.now() - audio_start
-        results: dict[str, Any] = {
-            'audio': audio
-        }
-        if self.log_view is True: self.kvw_informer.log_gpu_memory("Evaluating Target Sim", self.log_view)
-        # Time target similarity calculation
-        target_sim_start = datetime.datetime.now()
-        # Pass embedding for reuse in self_sim
-        target_sim, audio_float_tensor, audio_embed1 = self.fitness_scorer.target_similarity(audio)
-        target_sim_time = datetime.datetime.now() - target_sim_start
+        Args:
+            n_generations: Number of generations to evolve
+            ga_population_size: Size of GA population
+            ga_elite_size: Number of elite individuals to preserve
+            bo_refinement_interval: Apply BO refinement every N generations
+            bo_iterations_per_candidate: BO iterations per refined individual
+            verbose: Print detailed progress
+        """
+        # Create results directory
+        now = datetime.datetime.now()
+        results_dir = Path(
+            OUT_DIR
+            / f'{self.output_name}_{self.target_audio.stem}_hybrid_{now.strftime("%Y%m%d_%H%M%S")}'
+        )
+        os.makedirs(results_dir, exist_ok=True)
 
-        if self.log_view is True: self.kvw_informer.log_gpu_memory("Checking target vs min sim", self.log_view)
-        if target_sim > min_similarity:
-            # Time hybrid sim scoring
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("Evaluating Hybrid Sim", self.log_view)
-            results, feature_sim_time, audio2_time, self_sim_time = (
-                self.fitness_scorer.hybrid_similarity(best_results, audio_float_tensor, audio_embed1,
-                                                      self.other_text, voice_tensor, target_sim, results))
-            total_time = datetime.datetime.now() - start_time
-            if audio2_time != 0.0 and self_sim_time != 0.0:
-                if self.log_view is True: self.kvw_informer.log_gpu_memory(
-                    "Returning success results (target sim > min sim)", self.log_view)
-                if self.process_times is True: tps_report = str(
-                    f"Process Times: Audio1 gen: {audio_time.total_seconds():3f}s, Audio2 gen: {audio2_time.total_seconds():3f}s, Target Sim: {target_sim_time.total_seconds():3f}s,  Self Sim: {self_sim_time.total_seconds():3f}s, Feat Sim: {feature_sim_time.total_seconds():3f}s, Total: {total_time.total_seconds():3f}s")
-                return results, tps_report
-            else:
-                if self.log_view is True: self.kvw_informer.log_gpu_memory("target sim < min sim)", self.log_view)
+        # Initialize hybrid meta-learner
+        meta_learner = HybridMetaLearner(
+            ga_population_size=ga_population_size,
+            ga_elite_size=ga_elite_size,
+            ga_mutation_rate=0.1,
+            ga_crossover_rate=0.7,
+            bo_exploration_weight=2.0,
+            bo_local_search_radius=0.15,
+            bo_refinement_interval=bo_refinement_interval,
+            bo_refinement_candidates=min(3, ga_elite_size),
+            bo_iterations_per_candidate=bo_iterations_per_candidate,
+            diversity_injection_interval=10,
+            diversity_injection_count=2,
+        )
+
+        # Initialize population from voice generator's voices
+        initial_voices = self.voice_generator.voices
+        if len(initial_voices) < ga_population_size:
+            # Generate additional voices if needed
+            print(
+                f"Expanding initial population from {len(initial_voices)} to {ga_population_size}"
+            )
+            while len(initial_voices) < ga_population_size:
+                base = initial_voices[
+                    len(initial_voices) % len(self.voice_generator.voices)
+                ]
+                diversity = random.uniform(0.1, 0.3)
+                new_voice = self.voice_generator.generate_voice(base, diversity)
+                initial_voices.append(new_voice)
+
+        # Load checkpoint if resuming
+        if resume_checkpoint:
+            checkpoint_path = Path(resume_checkpoint)
+            if not checkpoint_path.exists():
+                print(f"Warning: Checkpoint not found: {resume_checkpoint}")
+                print("Starting fresh run instead...")
+                resume_checkpoint = None
+
+        if not resume_checkpoint:
+            meta_learner.initialize(initial_voices, self.voice_generator)
         else:
-            if self.log_view is True: self.kvw_informer.log_gpu_memory("target sim < min sim)", self.log_view)
-        results["score"] = 0.0
-        results["target_similarity"] = target_sim
-        tps_report = ''
-        return results, tps_report
+            # Initialize with dummy data first (required for BO setup)
+            meta_learner.initialize(initial_voices, self.voice_generator)
 
-    def clear_losers_from_memory(self):
-        # Get reference to the voices cache
-        voices_cache = self.speech_generator.pipeline.voices
+        # Run optimization
+        best_embedding, best_fitness, best_details = meta_learner.optimize(
+            voice_generator=self.voice_generator,
+            scorer=self.fitness_scorer.score_voice,
+            n_generations=n_generations,
+            results_dir=results_dir,
+            output_name=self.output_name,
+            target_audio_stem=self.target_audio.stem,
+            speech_generator=self.speech_generator,
+            target_text=self.target_text,
+            checkpoint_dir=results_dir / "checkpoints",
+            checkpoint_interval=checkpoint_interval,
+            resume_from=Path(resume_checkpoint) if resume_checkpoint else None,
+            verbose=verbose,
+        )
 
-        # Create list of voices to keep (winners)
-        voices_to_keep = {self.starting_voice}  # Always keep starting voice
+        # Clear memory
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
-        # Add current best voice to exempt list
-        if hasattr(self, 'best_voice') and self.best_voice:
-            voices_to_keep.add(self.best_voice)
-
-        # Clean up all other voices
-        voices_to_delete = []
-        for voice_name in voices_cache:
-            if voice_name not in voices_to_keep:
-                voices_to_delete.append(voice_name)
-
-        # Delete the non-winners
-        for voice_name in voices_to_delete:
-            del voices_cache[voice_name]
+        return best_embedding, best_fitness, best_details
