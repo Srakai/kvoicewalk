@@ -143,6 +143,32 @@ def main():
         "--resume_checkpoint", type=str, help="Path to checkpoint file to resume from"
     )
 
+    # Arguments for CMA-ES mode
+    group_cmaes = parser.add_argument_group("CMA-ES Mode")
+    group_cmaes.add_argument(
+        "--cmaes_mode",
+        help="Use CMA-ES optimizer (state-of-the-art for continuous optimization)",
+        action="store_true",
+    )
+    group_cmaes.add_argument(
+        "--cmaes_generations",
+        type=int,
+        help="Number of generations for CMA-ES",
+        default=50,
+    )
+    group_cmaes.add_argument(
+        "--cmaes_population",
+        type=int,
+        help="Population size (auto-determined if not specified)",
+        default=None,
+    )
+    group_cmaes.add_argument(
+        "--cmaes_sigma",
+        type=float,
+        help="Initial step size (exploration radius)",
+        default=0.3,
+    )
+
     # Arguments for test mode
     group_test = parser.add_argument_group("Test Mode")
     group_test.add_argument(
@@ -351,6 +377,27 @@ def main():
                     ga_elite_size=args.hybrid_elite,
                     bo_refinement_interval=args.hybrid_bo_interval,
                     bo_iterations_per_candidate=args.hybrid_bo_iterations,
+                    checkpoint_interval=args.checkpoint_interval,
+                    resume_checkpoint=args.resume_checkpoint,
+                    verbose=True,
+                )
+            elif args.cmaes_mode:
+                # Use CMA-ES optimizer
+                print(f"\n{'='*80}")
+                print(f"Starting CMA-ES Optimizer")
+                print(f"{'='*80}")
+                print(f"Generations: {args.cmaes_generations}")
+                print(
+                    f"Population Size: {args.cmaes_population if args.cmaes_population else 'Auto'}"
+                )
+                print(f"Initial Sigma: {args.cmaes_sigma}")
+                print(f"Checkpoint Interval: {args.checkpoint_interval}")
+                print(f"{'='*80}\n")
+
+                ktb.cma_es_optimize(
+                    n_generations=args.cmaes_generations,
+                    population_size=args.cmaes_population,
+                    sigma0=args.cmaes_sigma,
                     checkpoint_interval=args.checkpoint_interval,
                     resume_checkpoint=args.resume_checkpoint,
                     verbose=True,
