@@ -1,7 +1,9 @@
 import datetime
+import random
 import warnings
 from datetime import timedelta
-from typing import Any
+from pathlib import Path
+from typing import Any, List, Tuple, Optional
 
 import numpy as np
 import torch
@@ -28,13 +30,17 @@ class FitnessScorer:
         target_wav: str,
         speech_generator: SpeechGenerator,
         device: str = None,
+        target_audio_chunks: Optional[List[Tuple[Path, str, float, float]]] = None,
     ):
         """
         Initialize FitnessScorer with GPU optimization.
 
         Args:
             target_wav: Path to target audio file
+            speech_generator: SpeechGenerator instance
             device: Device to use ('mps', 'cuda' or 'cpu'). If None, auto-detects best device.
+            target_audio_chunks: Optional list of (chunk_path, transcription, start_time, end_time) tuples
+                                for chunked processing of long audio files
         """
         self.speech_generator = speech_generator
         self.log_view = False
@@ -42,6 +48,7 @@ class FitnessScorer:
         self.feature_times = False
         self.device = device if device is not None else get_device()
         self.target_wav = target_wav
+        self.target_audio_chunks = target_audio_chunks
 
         # Constants
         self.sr = 24000
@@ -113,15 +120,64 @@ class FitnessScorer:
         self.contrast_values = torch.zeros(self.n_bands, device=self.device)
 
         # Preload target audio tensor to GPU (do this once!)
-        self._target_tensor = self.verification.load_audio(target_wav).to(self.device)
-        self.batch_target = self._target_tensor.unsqueeze(0)
-        self.emb1 = self.verification.encode_batch(
-            self.batch_target, None, normalize=False
-        )
+        # If using chunks, we'll load them on-demand; otherwise load the full file
+        if target_audio_chunks:
+            print(f"Using chunked mode with {len(target_audio_chunks)} chunks")
+            # Pre-compute embeddings and features for all chunks
+            self._chunk_embeddings = []
+            self._chunk_features = []
 
-        # Pre-compute target features for feature penalty calculation
-        target_audio_numpy = self._target_tensor.cpu().numpy()
-        self.target_features = self.extract_features(target_audio_numpy)
+            for chunk_path, chunk_text, start_time, end_time in target_audio_chunks:
+                chunk_tensor = self.verification.load_audio(str(chunk_path)).to(
+                    self.device
+                )
+                batch_chunk = chunk_tensor.unsqueeze(0)
+                chunk_emb = self.verification.encode_batch(
+                    batch_chunk, None, normalize=False
+                )
+
+                chunk_audio_numpy = chunk_tensor.cpu().numpy()
+                chunk_features = self.extract_features(chunk_audio_numpy)
+
+                self._chunk_embeddings.append(chunk_emb)
+                self._chunk_features.append(chunk_features)
+
+            # For compatibility, set the first chunk as default
+            self._target_tensor = self.verification.load_audio(
+                str(target_audio_chunks[0][0])
+            ).to(self.device)
+            self.batch_target = self._target_tensor.unsqueeze(0)
+            self.emb1 = self._chunk_embeddings[0]
+            self.target_features = self._chunk_features[0]
+        else:
+            # Original behavior: load full audio file
+            self._target_tensor = self.verification.load_audio(target_wav).to(
+                self.device
+            )
+            self.batch_target = self._target_tensor.unsqueeze(0)
+            self.emb1 = self.verification.encode_batch(
+                self.batch_target, None, normalize=False
+            )
+            # Pre-compute target features for feature penalty calculation
+            target_audio_numpy = self._target_tensor.cpu().numpy()
+            self.target_features = self.extract_features(target_audio_numpy)
+
+    def _select_random_chunk(self):
+        """
+        Randomly select a chunk for evaluation when using chunked mode.
+        Updates self.emb1 and self.target_features to the selected chunk.
+        """
+        if not self.target_audio_chunks:
+            return  # Not using chunks, nothing to do
+
+        # Randomly select a chunk
+        chunk_idx = random.randint(0, len(self.target_audio_chunks) - 1)
+
+        # Update the target embedding and features to the selected chunk
+        self.emb1 = self._chunk_embeddings[chunk_idx]
+        self.target_features = self._chunk_features[chunk_idx]
+
+        return chunk_idx
 
     def hybrid_similarity(
         self,
@@ -225,6 +281,10 @@ class FitnessScorer:
     ) -> tuple[dict[str, Any], str]:
         start_time = datetime.datetime.now()
 
+        # If using chunks, randomly select one for this evaluation
+        if self.target_audio_chunks:
+            chunk_idx = self._select_random_chunk()
+
         audio_start = datetime.datetime.now()
         voice_tensor = voice_tensor.detach().to(
             self.speech_generator.device, dtype=torch.float32
@@ -267,6 +327,8 @@ class FitnessScorer:
                     f"{feature_sim_time.total_seconds():.3f}s, Total: "
                     f"{total_time.total_seconds():.3f}s"
                 )
+                if self.target_audio_chunks:
+                    tps_report += f" [Chunk {chunk_idx}]"
                 return results, tps_report
 
         results["score"] = 0.0

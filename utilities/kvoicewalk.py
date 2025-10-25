@@ -4,7 +4,7 @@ import os
 import random
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Tuple, Optional
 
 import soundfile as sf
 import torch
@@ -31,12 +31,14 @@ class KVoiceWalk:
         population_limit: int,
         starting_voice: str,
         output_name: str,
+        target_audio_chunks: Optional[List[Tuple[Path, str, float, float]]] = None,
     ) -> None:
         try:
             self.memcache_clear_freq = 100
             self.target_audio = target_audio
             self.target_text = target_text
             self.other_text = other_text
+            self.target_audio_chunks = target_audio_chunks
 
             # Determine device once
             from utilities.util import get_device
@@ -51,7 +53,16 @@ class KVoiceWalk:
             self.fitness_scorer = FitnessScorer(
                 str(target_audio),
                 speech_generator=self.speech_generator,
+                target_audio_chunks=target_audio_chunks,
             )
+
+            # Display chunking info
+            if target_audio_chunks:
+                print(
+                    f"\nChunked processing enabled: {len(target_audio_chunks)} chunks available"
+                )
+                print("Each evaluation will randomly sample from one chunk\n")
+
             # If starting_voice is provided, skip the expensive voice evaluation
             if starting_voice:
                 from utilities.pytorch_sanitizer import load_voice_safely

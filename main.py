@@ -78,6 +78,12 @@ def main():
         help="Filename for the generated output audio",
         default="my_new_voice",
     )
+    parser.add_argument(
+        "--max_chunk_duration",
+        type=float,
+        help="Maximum duration in seconds for audio chunks when processing long files. Default: 30.0. Set to 0 to disable chunking.",
+        default=30.0,
+    )
 
     # Arguments for random walk mode
     group_walk = parser.add_argument_group("Random Walk Mode")
@@ -177,11 +183,38 @@ def main():
         return
 
     # Handle target_audio input - convert to mono wav 24K automatically
+    target_audio_chunks = None
     if args.target_audio:
         try:
             target_audio_path = Path(args.target_audio)
             if target_audio_path.is_file():
                 args.target_audio = convert_to_wav_mono_24k(target_audio_path)
+
+                # Check if chunking is needed
+                if args.max_chunk_duration > 0:
+                    # Load audio to check duration
+                    import soundfile as sf
+
+                    audio_data, sr = sf.read(str(args.target_audio))
+                    duration = len(audio_data) / sr
+
+                    # Only chunk if audio is longer than max_chunk_duration
+                    if duration > args.max_chunk_duration:
+                        print(
+                            f"\nAudio duration ({duration:.2f}s) exceeds max chunk duration ({args.max_chunk_duration}s)"
+                        )
+                        print("Creating intelligent chunks using Whisper...")
+                        transcriber = Transcriber()
+                        target_audio_chunks = transcriber.chunk_audio(
+                            args.target_audio,
+                            max_chunk_duration=args.max_chunk_duration,
+                        )
+                        if target_audio_chunks:
+                            print(
+                                f"\nCreated {len(target_audio_chunks)} chunks for processing"
+                            )
+                        else:
+                            print("Warning: Chunking failed, will process entire file")
             else:
                 print(f"File not found: {target_audio_path}")
         except Exception as e:
@@ -297,6 +330,7 @@ def main():
             args.population_limit,
             args.starting_voice,
             args.output_name,
+            target_audio_chunks=target_audio_chunks,
         )
         try:
             if args.hybrid_mode:

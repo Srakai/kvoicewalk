@@ -1,5 +1,6 @@
 import datetime
 from pathlib import Path
+from typing import List, Tuple
 
 import librosa
 import numpy as np
@@ -9,6 +10,7 @@ from faster_whisper import WhisperModel
 ROOT_DIR = Path(__file__).resolve().parents[1]
 TEXTS_DIR = ROOT_DIR / "texts"
 CONVERTED_DIR = ROOT_DIR / "out" / "converted_audio"
+CHUNKS_DIR = ROOT_DIR / "out" / "audio_chunks"
 
 
 def convert_to_wav_mono_24k(audio_path: Path) -> Path:
@@ -101,6 +103,131 @@ class Transcriber:
         except Exception as e:
             print(f"Transcription failed for {audio_file.name} - Error: {e}")
             return
+
+    def chunk_audio(
+        self, audio_path: Path, max_chunk_duration: float = 30.0
+    ) -> List[Tuple[Path, str, float, float]]:
+        """
+        Intelligently chunk audio file using Whisper's natural speech boundaries.
+
+        Args:
+            audio_path: Path to the audio file to chunk
+            max_chunk_duration: Maximum duration in seconds for each chunk (default: 30s)
+
+        Returns:
+            List of tuples: (chunk_path, transcription, start_time, end_time)
+        """
+        print(f"Chunking {audio_path.name} with max duration: {max_chunk_duration}s...")
+
+        try:
+            # Load audio data
+            audio_data, sr = sf.read(str(audio_path))
+
+            # Ensure mono
+            if len(audio_data.shape) > 1:
+                audio_data = np.mean(audio_data, axis=1)
+
+            # Transcribe with word-level timestamps
+            segments, info = self.model.transcribe(
+                str(audio_path), beam_size=5, word_timestamps=True
+            )
+
+            print(
+                f"Detected language '{info.language}' with probability {info.language_probability:.2f}"
+            )
+
+            # Group segments into chunks based on max_chunk_duration
+            chunks = []
+            current_chunk_segments = []
+            current_chunk_start = 0.0
+            current_chunk_duration = 0.0
+
+            for segment in segments:
+                segment_start = segment.start
+                segment_end = segment.end
+                segment_duration = segment_end - segment_start
+
+                # If adding this segment would exceed max duration, save current chunk
+                if (
+                    current_chunk_segments
+                    and (current_chunk_duration + segment_duration) > max_chunk_duration
+                ):
+                    # Save current chunk
+                    chunk_end = current_chunk_segments[-1].end
+                    chunks.append(
+                        {
+                            "start": current_chunk_start,
+                            "end": chunk_end,
+                            "segments": current_chunk_segments,
+                            "duration": chunk_end - current_chunk_start,
+                        }
+                    )
+
+                    # Start new chunk
+                    current_chunk_segments = [segment]
+                    current_chunk_start = segment_start
+                    current_chunk_duration = segment_duration
+                else:
+                    # Add segment to current chunk
+                    current_chunk_segments.append(segment)
+                    current_chunk_duration += segment_duration
+
+            # Don't forget the last chunk
+            if current_chunk_segments:
+                chunk_end = current_chunk_segments[-1].end
+                chunks.append(
+                    {
+                        "start": current_chunk_start,
+                        "end": chunk_end,
+                        "segments": current_chunk_segments,
+                        "duration": chunk_end - current_chunk_start,
+                    }
+                )
+
+            # Create output directory for chunks
+            CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
+            chunk_info = []
+
+            # Extract and save each chunk
+            for i, chunk in enumerate(chunks):
+                start_sample = int(chunk["start"] * sr)
+                end_sample = int(chunk["end"] * sr)
+
+                # Extract audio chunk
+                chunk_audio = audio_data[start_sample:end_sample]
+
+                # Create chunk filename
+                chunk_filename = f"{audio_path.stem}_chunk_{i:03d}.wav"
+                chunk_path = CHUNKS_DIR / chunk_filename
+
+                # Save chunk
+                sf.write(str(chunk_path), chunk_audio, sr)
+
+                # Get transcription for this chunk
+                chunk_transcription = " ".join(
+                    [seg.text.strip() for seg in chunk["segments"]]
+                )
+
+                # Store chunk info
+                chunk_info.append(
+                    (chunk_path, chunk_transcription, chunk["start"], chunk["end"])
+                )
+
+                print(
+                    f"  Chunk {i}: {chunk['duration']:.2f}s ({chunk['start']:.2f}s - {chunk['end']:.2f}s)"
+                )
+                print(
+                    f"    Text: {chunk_transcription[:80]}..."
+                    if len(chunk_transcription) > 80
+                    else f"    Text: {chunk_transcription}"
+                )
+
+            print(f"\nCreated {len(chunk_info)} chunks in {CHUNKS_DIR}")
+            return chunk_info
+
+        except Exception as e:
+            print(f"Chunking failed for {audio_path.name} - Error: {e}")
+            return []
 
 
 # TODO: Integrate into automated workflows
