@@ -356,7 +356,7 @@ class FitnessScorer:
             # STFT for spectral features - GPU
             stft = torch.stft(audio_tensor, n_fft=self.n_fft, hop_length=self.hop_length,
                               win_length=self.n_fft, return_complex=True, center=True)
-            magnitude = torch.abs(stft)
+            magnitude = torch.abs(stft).to(self.device)
             power = magnitude ** 2
 
             # Spectral centroid - GPU
