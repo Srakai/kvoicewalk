@@ -28,7 +28,9 @@ def main():
         os.environ['TRANSFORMERS_OFFLINE'] = '1'
     # True: Limits excess memory overhead reservation, benchmarked at ~0.70GB throughout operation, no spikes
     # Cap_memory_frac = 0.2, can be set 0-1, but recommend no lower than 0.15
-    if cap_memory: torch.cuda.set_per_process_memory_fraction(cap_memory_frac)
+    # Note: Memory capping only works with CUDA, not MPS
+    if cap_memory and torch.cuda.is_available(): 
+        torch.cuda.set_per_process_memory_fraction(cap_memory_frac)
 
     parser = argparse.ArgumentParser(description="A random walk Kokoro voice cloner.")
 

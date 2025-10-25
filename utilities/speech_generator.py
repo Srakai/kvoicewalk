@@ -4,7 +4,7 @@ import warnings
 import torch
 from kokoro import KPipeline
 
-from utilities.kvw_informer import KVW_Informer
+from utilities.kvw_informer import KVW_Informer, get_device
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 class SpeechGenerator:
     def __init__(self, kvw_informer: KVW_Informer, target_text: str, other_text: str):
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = get_device()
         self.kvw_informer = kvw_informer
         self.log_view = kvw_informer.settings['speech_gen_logs']
         self.process_times = self.kvw_informer.settings['tps_reports']

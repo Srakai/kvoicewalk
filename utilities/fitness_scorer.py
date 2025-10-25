@@ -11,7 +11,7 @@ from speechbrain.inference.speaker import SpeakerRecognition
 from torch import FloatTensor
 from torchaudio.prototype.transforms import ChromaSpectrogram
 
-from utilities.kvw_informer import KVW_Informer
+from utilities.kvw_informer import KVW_Informer, get_device
 from utilities.speech_generator import SpeechGenerator
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -23,20 +23,20 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 class FitnessScorer:
     def __init__(self, target_wav: str, kvw_informer: KVW_Informer, speech_generator: SpeechGenerator,
-                 device: str = 'cuda'):
+                 device: str = None):
         """
         Initialize FitnessScorer with GPU optimization.
 
         Args:
             target_wav: Path to target audio file
-            device: Device to use ('cuda' or 'cpu')
+            device: Device to use ('mps', 'cuda' or 'cpu'). If None, auto-detects best device.
         """
         self.kvw_informer = kvw_informer
         self.speech_generator = speech_generator
         self.log_view = self.kvw_informer.settings['fitness_logs']
         self.process_times = self.kvw_informer.settings['tps_reports']
         self.feature_times = self.kvw_informer.settings['feature_times']
-        self.device = device if torch.cuda.is_available() else 'cpu'
+        self.device = device if device is not None else get_device()
         self.target_wav = target_wav
 
         # Constants
@@ -199,7 +199,7 @@ class FitnessScorer:
             Similarity score (float)
         """
         # Ensure input is a tensor on the correct device
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = get_device()
 
         if isinstance(audio_tensor, np.ndarray):
             audio_float_tensor = torch.from_numpy(audio_tensor.astype(np.float32)).to(device)
@@ -294,7 +294,7 @@ class FitnessScorer:
         Returns:
             Self-similarity score (float)
         """
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = get_device()
 
         if isinstance(audio_tensor2, np.ndarray):
             audio_tensor2 = torch.from_numpy(audio_tensor2.astype(np.float32)).to(device)
