@@ -15,6 +15,7 @@ from utilities.initial_selector import InitialSelector
 from utilities.speech_generator import SpeechGenerator
 from utilities.voice_generator import VoiceGenerator
 from utilities.hybrid_meta_learner import HybridMetaLearner
+from utilities.cma_es_optimizer import CMAESOptimizer
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT_DIR / "out"
@@ -281,6 +282,89 @@ class KVoiceWalk:
             target_text=self.target_text,
             checkpoint_dir=results_dir / "checkpoints",
             checkpoint_interval=checkpoint_interval,
+            resume_from=Path(resume_checkpoint) if resume_checkpoint else None,
+            verbose=verbose,
+        )
+
+        # Clear memory
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+
+        return best_embedding, best_fitness, best_details
+
+    def cma_es_optimize(
+        self,
+        n_generations: int = 50,
+        population_size: int = None,  # Auto-determined by CMA-ES
+        sigma0: float = 0.3,  # Initial step size
+        checkpoint_interval: int = 5,
+        resume_checkpoint: str = None,
+        verbose: bool = True,
+    ):
+        """
+        Run CMA-ES optimization for voice embedding.
+
+        CMA-ES (Covariance Matrix Adaptation Evolution Strategy) is a
+        state-of-the-art algorithm for continuous black-box optimization.
+        It adapts its search distribution to the geometry of the fitness
+        landscape, making it highly efficient for this type of problem.
+
+        Args:
+            n_generations: Number of generations to evolve
+            population_size: Population size (auto-determined if None)
+            sigma0: Initial step size (exploration radius)
+            checkpoint_interval: Save checkpoint every N generations
+            resume_checkpoint: Path to checkpoint file to resume from
+            verbose: Print detailed progress
+        """
+        # Create results directory
+        now = datetime.datetime.now()
+        results_dir = Path(
+            OUT_DIR
+            / f'{self.output_name}_{self.target_audio.stem}_cmaes_{now.strftime("%Y%m%d_%H%M%S")}'
+        )
+        os.makedirs(results_dir, exist_ok=True)
+
+        # Initialize CMA-ES optimizer
+        optimizer = CMAESOptimizer(
+            population_size=population_size,
+            sigma0=sigma0,
+            checkpoint_interval=checkpoint_interval,
+        )
+
+        # Use starting voice as initial point
+        initial_voice = self.starting_voice
+
+        # Load checkpoint if resuming
+        if resume_checkpoint:
+            checkpoint_path = Path(resume_checkpoint)
+            if checkpoint_path.exists():
+                # When resuming, load checkpoint directly (it contains the CMA-ES state)
+                optimizer.load_checkpoint(checkpoint_path, verbose=verbose)
+            else:
+                print(f"Warning: Checkpoint not found: {resume_checkpoint}")
+                print("Starting fresh run instead...")
+                optimizer.initialize(
+                    initial_voice, self.voice_generator, verbose=verbose
+                )
+        else:
+            # Fresh run - initialize with starting voice
+            optimizer.initialize(initial_voice, self.voice_generator, verbose=verbose)
+
+        # Run optimization
+        best_embedding, best_fitness, best_details = optimizer.optimize(
+            voice_generator=self.voice_generator,
+            scorer=self.fitness_scorer.score_voice,
+            n_generations=n_generations,
+            results_dir=results_dir,
+            output_name=self.output_name,
+            target_audio_stem=self.target_audio.stem,
+            speech_generator=self.speech_generator,
+            target_text=self.target_text,
+            checkpoint_dir=results_dir / "checkpoints",
             resume_from=Path(resume_checkpoint) if resume_checkpoint else None,
             verbose=verbose,
         )

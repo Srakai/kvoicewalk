@@ -84,6 +84,11 @@ def main():
         help="Maximum duration in seconds for audio chunks when processing long files. Default: 30.0. Set to 0 to disable chunking.",
         default=30.0,
     )
+    parser.add_argument(
+        "--split_by_sentence",
+        help="Split audio chunks only at sentence boundaries, ignoring max_chunk_duration.",
+        action="store_true",
+    )
 
     # Arguments for random walk mode
     group_walk = parser.add_argument_group("Random Walk Mode")
@@ -141,6 +146,37 @@ def main():
     )
     group_hybrid.add_argument(
         "--resume_checkpoint", type=str, help="Path to checkpoint file to resume from"
+    )
+
+    # Arguments for CMA-ES mode
+    group_cmaes = parser.add_argument_group("CMA-ES Mode")
+    group_cmaes.add_argument(
+        "--cmaes_mode",
+        help="Use CMA-ES optimizer (state-of-the-art for continuous optimization)",
+        action="store_true",
+    )
+    group_cmaes.add_argument(
+        "--cmaes_generations",
+        type=int,
+        help="Number of generations for CMA-ES",
+        default=50,
+    )
+    group_cmaes.add_argument(
+        "--cmaes_population",
+        type=int,
+        help="Population size (auto-determined if not specified)",
+        default=None,
+    )
+    group_cmaes.add_argument(
+        "--cmaes_sigma",
+        type=float,
+        help="Initial step size (exploration radius)",
+        default=0.3,
+    )
+    group_cmaes.add_argument(
+        "--cmaes_resume_checkpoint",
+        type=str,
+        help="Path to CMA-ES checkpoint file to resume from",
     )
 
     # Arguments for test mode
@@ -208,6 +244,7 @@ def main():
                         target_audio_chunks = transcriber.chunk_audio(
                             args.target_audio,
                             max_chunk_duration=args.max_chunk_duration,
+                            split_by_sentence=args.split_by_sentence,
                         )
                         if target_audio_chunks:
                             print(
@@ -353,6 +390,27 @@ def main():
                     bo_iterations_per_candidate=args.hybrid_bo_iterations,
                     checkpoint_interval=args.checkpoint_interval,
                     resume_checkpoint=args.resume_checkpoint,
+                    verbose=True,
+                )
+            elif args.cmaes_mode:
+                # Use CMA-ES optimizer
+                print(f"\n{'='*80}")
+                print(f"Starting CMA-ES Optimizer")
+                print(f"{'='*80}")
+                print(f"Generations: {args.cmaes_generations}")
+                print(
+                    f"Population Size: {args.cmaes_population if args.cmaes_population else 'Auto'}"
+                )
+                print(f"Initial Sigma: {args.cmaes_sigma}")
+                print(f"Checkpoint Interval: {args.checkpoint_interval}")
+                print(f"{'='*80}\n")
+
+                ktb.cma_es_optimize(
+                    n_generations=args.cmaes_generations,
+                    population_size=args.cmaes_population,
+                    sigma0=args.cmaes_sigma,
+                    checkpoint_interval=args.checkpoint_interval,
+                    resume_checkpoint=args.cmaes_resume_checkpoint,
                     verbose=True,
                 )
             else:

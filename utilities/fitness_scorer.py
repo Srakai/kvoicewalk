@@ -239,33 +239,34 @@ class FitnessScorer:
             self_similarity = self.self_similarity(audio_embed1, audio2_array)
             self_sim_time = datetime.datetime.now() - self_sim_start
 
-            # Prepare values for scoring
+            # Prepare values and weights for weighted harmonic mean
             values = np.array([target_similarity, self_similarity, feature_similarity])
+            weights = np.array([0.48, 0.5, 0.02])
 
-            # Weights for potential future use (currently using unweighted harmonic mean)
-            # weights = np.array([0.48, 0.5, 0.02])
+            # Weighted harmonic mean calculation
+            # Formula: sum(weights) / sum(weights[i] / values[i])
+            # This heavily penalizes low scores while giving different importance to each metric
+            score = np.sum(weights) / np.sum(weights / values)
 
-            # Harmonic mean calculation (unweighted as per current implementation)
-            # Harmonic mean heavily penalizes low scores, encouraging balanced improvement
-            score = len(values) / np.sum(1.0 / values)
             results.update(
                 {
                     "score": float(score),
                     "target_similarity": float(target_similarity),
                     "self_similarity": float(self_similarity),
                     "feature_similarity": float(feature_similarity),
-                    # "weights": weights.tolist()  # Include weights for potential future use
+                    "weights": weights.tolist(),
                 }
             )
             return results, feature_time, audio2_time, self_sim_time
         else:
+            weights = np.array([0.48, 0.5, 0.02])
             results.update(
                 {
                     "score": 0.0,
                     "target_similarity": float(target_similarity),
                     "self_similarity": 0.0,
                     "feature_similarity": float(feature_similarity),
-                    # "weights": weights.tolist()  # Include weights for potential future use
+                    "weights": weights.tolist(),
                 }
             )
             audio2_time = 0.0

@@ -106,7 +106,10 @@ class Transcriber:
             return
 
     def chunk_audio(
-        self, audio_path: Path, max_chunk_duration: float = 30.0
+        self,
+        audio_path: Path,
+        max_chunk_duration: float = 30.0,
+        split_by_sentence: bool = False,
     ) -> List[Tuple[Path, str, float, float]]:
         """
         Intelligently chunk audio file using Whisper's natural speech boundaries.
@@ -114,11 +117,18 @@ class Transcriber:
         Args:
             audio_path: Path to the audio file to chunk
             max_chunk_duration: Maximum duration in seconds for each chunk (default: 30s)
+            split_by_sentence: If True, split only at sentence boundaries regardless of duration.
+                             If False, respect max_chunk_duration and split at sentence boundaries when possible.
 
         Returns:
             List of tuples: (chunk_path, transcription, start_time, end_time)
         """
-        print(f"Chunking {audio_path.name} with max duration: {max_chunk_duration}s...")
+        mode_desc = (
+            "sentence boundaries"
+            if split_by_sentence
+            else f"max duration: {max_chunk_duration}s"
+        )
+        print(f"Chunking {audio_path.name} by {mode_desc}...")
 
         try:
             # Load audio data
@@ -137,51 +147,191 @@ class Transcriber:
                 f"Detected language '{info.language}' with probability {info.language_probability:.2f}"
             )
 
-            # Group segments into chunks based on max_chunk_duration
+            # Group segments into chunks
+            # Strategy depends on split_by_sentence parameter
             chunks = []
-            current_chunk_segments = []
-            current_chunk_start = 0.0
-            current_chunk_duration = 0.0
+            current_chunk_words = []
+            current_chunk_start = None
+            current_chunk_end = None
+
+            # Sentence-ending punctuation
+            sentence_enders = {".", "!", "?"}
 
             for segment in segments:
-                segment_start = segment.start
-                segment_end = segment.end
-                segment_duration = segment_end - segment_start
+                # Get words from segment (if available)
+                if hasattr(segment, "words") and segment.words:
+                    for word in segment.words:
+                        word_start = word.start
+                        word_end = word.end
+                        word_text = word.word.strip()
 
-                # If adding this segment would exceed max duration, save current chunk
-                if (
-                    current_chunk_segments
-                    and (current_chunk_duration + segment_duration) > max_chunk_duration
-                ):
-                    # Save current chunk
-                    chunk_end = current_chunk_segments[-1].end
-                    chunks.append(
-                        {
-                            "start": current_chunk_start,
-                            "end": chunk_end,
-                            "segments": current_chunk_segments,
-                            "duration": chunk_end - current_chunk_start,
-                        }
-                    )
+                        # Initialize chunk start time
+                        if current_chunk_start is None:
+                            current_chunk_start = word_start
 
-                    # Start new chunk
-                    current_chunk_segments = [segment]
-                    current_chunk_start = segment_start
-                    current_chunk_duration = segment_duration
+                        # Add word to current chunk
+                        current_chunk_words.append(word)
+                        current_chunk_end = word_end
+
+                        # Check if this word ends a sentence
+                        is_sentence_end = any(
+                            word_text.endswith(punct) for punct in sentence_enders
+                        )
+
+                        if split_by_sentence:
+                            # Simple mode: split only at sentence boundaries
+                            if is_sentence_end:
+                                chunks.append(
+                                    {
+                                        "start": current_chunk_start,
+                                        "end": current_chunk_end,
+                                        "words": current_chunk_words,
+                                        "duration": current_chunk_end
+                                        - current_chunk_start,
+                                    }
+                                )
+                                # Reset for next chunk
+                                current_chunk_words = []
+                                current_chunk_start = None
+                                current_chunk_end = None
+                        else:
+                            # Duration-aware mode: respect max_chunk_duration
+                            # Check current duration
+                            current_duration = word_end - current_chunk_start
+
+                            # Split strategy:
+                            # 1. If we're at a sentence boundary and duration > 80% of max, split here
+                            # 2. If duration exceeds max and we have words, split at last sentence or here
+                            if is_sentence_end and current_duration >= (
+                                0.8 * max_chunk_duration
+                            ):
+                                # Good place to split - at sentence boundary, near max duration
+                                chunks.append(
+                                    {
+                                        "start": current_chunk_start,
+                                        "end": current_chunk_end,
+                                        "words": current_chunk_words,
+                                        "duration": current_duration,
+                                    }
+                                )
+                                # Reset for next chunk
+                                current_chunk_words = []
+                                current_chunk_start = None
+                                current_chunk_end = None
+                            elif (
+                                current_duration > max_chunk_duration
+                                and len(current_chunk_words) > 1
+                            ):
+                                # Exceeded max duration - need to split
+                                # Try to find last sentence boundary in current chunk
+                                split_idx = None
+                                for i in range(len(current_chunk_words) - 2, -1, -1):
+                                    w = current_chunk_words[i]
+                                    w_text = w.word.strip()
+                                    if any(
+                                        w_text.endswith(punct)
+                                        for punct in sentence_enders
+                                    ):
+                                        split_idx = i + 1
+                                        break
+
+                                if split_idx and split_idx < len(current_chunk_words):
+                                    # Split at sentence boundary
+                                    chunk_words = current_chunk_words[:split_idx]
+                                    remaining_words = current_chunk_words[split_idx:]
+
+                                    chunks.append(
+                                        {
+                                            "start": current_chunk_start,
+                                            "end": chunk_words[-1].end,
+                                            "words": chunk_words,
+                                            "duration": chunk_words[-1].end
+                                            - current_chunk_start,
+                                        }
+                                    )
+
+                                    # Start new chunk with remaining words
+                                    current_chunk_words = remaining_words
+                                    current_chunk_start = (
+                                        remaining_words[0].start
+                                        if remaining_words
+                                        else None
+                                    )
+                                    current_chunk_end = (
+                                        remaining_words[-1].end
+                                        if remaining_words
+                                        else None
+                                    )
+                                else:
+                                    # No sentence boundary found, split at current word
+                                    chunk_words = current_chunk_words[:-1]
+
+                                    chunks.append(
+                                        {
+                                            "start": current_chunk_start,
+                                            "end": chunk_words[-1].end,
+                                            "words": chunk_words,
+                                            "duration": chunk_words[-1].end
+                                            - current_chunk_start,
+                                        }
+                                    )
+
+                                    # Start new chunk with current word
+                                    current_chunk_words = [word]
+                                    current_chunk_start = word_start
+                                    current_chunk_end = word_end
                 else:
-                    # Add segment to current chunk
-                    current_chunk_segments.append(segment)
-                    current_chunk_duration += segment_duration
+                    # Fallback: no word timestamps, use segment-level
+                    if current_chunk_start is None:
+                        current_chunk_start = segment.start
+
+                    potential_duration = segment.end - current_chunk_start
+
+                    if potential_duration > max_chunk_duration and current_chunk_words:
+                        # Save current chunk
+                        chunks.append(
+                            {
+                                "start": current_chunk_start,
+                                "end": current_chunk_end,
+                                "text": " ".join(
+                                    [
+                                        w.word if hasattr(w, "word") else str(w)
+                                        for w in current_chunk_words
+                                    ]
+                                ),
+                                "duration": current_chunk_end - current_chunk_start,
+                            }
+                        )
+
+                        # Start new chunk
+                        current_chunk_words = [
+                            {
+                                "word": segment.text,
+                                "start": segment.start,
+                                "end": segment.end,
+                            }
+                        ]
+                        current_chunk_start = segment.start
+                        current_chunk_end = segment.end
+                    else:
+                        # Add segment as pseudo-word
+                        current_chunk_words.append(
+                            {
+                                "word": segment.text,
+                                "start": segment.start,
+                                "end": segment.end,
+                            }
+                        )
+                        current_chunk_end = segment.end
 
             # Don't forget the last chunk
-            if current_chunk_segments:
-                chunk_end = current_chunk_segments[-1].end
+            if current_chunk_words:
                 chunks.append(
                     {
                         "start": current_chunk_start,
-                        "end": chunk_end,
-                        "segments": current_chunk_segments,
-                        "duration": chunk_end - current_chunk_start,
+                        "end": current_chunk_end,
+                        "words": current_chunk_words,
+                        "duration": current_chunk_end - current_chunk_start,
                     }
                 )
 
@@ -208,10 +358,16 @@ class Transcriber:
                 # Save chunk
                 sf.write(str(chunk_path), chunk_audio, sr)
 
-                # Get transcription for this chunk
-                chunk_transcription = " ".join(
-                    [seg.text.strip() for seg in chunk["segments"]]
-                )
+                # Get transcription for this chunk (from word objects)
+                if chunk.get("words"):
+                    chunk_transcription = " ".join(
+                        [
+                            w.word.strip() if hasattr(w, "word") else str(w).strip()
+                            for w in chunk["words"]
+                        ]
+                    )
+                else:
+                    chunk_transcription = chunk.get("text", "")
 
                 # Store chunk info
                 chunk_info.append(
