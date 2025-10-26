@@ -239,22 +239,14 @@ class FitnessScorer:
             self_similarity = self.self_similarity(audio_embed1, audio2_array)
             self_sim_time = datetime.datetime.now() - self_sim_start
 
-            # Optimized weights from tune_weights.py experiment:
-            # target_similarity:  1.0000
-            # self_similarity:    0.0000
-            # feature_similarity: 0.0000
-            # Separation Score: 0.0659
-            #
-            # This means the scoring function should focus purely on target similarity,
-            # as the experiment found that self and feature similarity don't help separate voices.
-            weights = np.array([1.0, 0.0, 0.0])
+            # Prepare values and weights for weighted harmonic mean
+            values = np.array([target_similarity, self_similarity, feature_similarity])
+            weights = np.array([0.48, 0.5, 0.02])
 
-            # Weighted sum using optimized weights
-            score = (
-                weights[0] * target_similarity
-                + weights[1] * self_similarity
-                + weights[2] * feature_similarity
-            )
+            # Weighted harmonic mean calculation
+            # Formula: sum(weights) / sum(weights[i] / values[i])
+            # This heavily penalizes low scores while giving different importance to each metric
+            score = np.sum(weights) / np.sum(weights / values)
 
             results.update(
                 {
@@ -267,7 +259,7 @@ class FitnessScorer:
             )
             return results, feature_time, audio2_time, self_sim_time
         else:
-            weights = np.array([1.0, 0.0, 0.0])
+            weights = np.array([0.48, 0.5, 0.02])
             results.update(
                 {
                     "score": 0.0,
